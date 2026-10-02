@@ -59,6 +59,39 @@ MCP_STANDARD_ROUTE_MAPS = [
     ),
 ]
 
+MCP_CANVAS_ROUTE_MAPS = [
+    RouteMap(
+        methods=["GET"],
+        pattern=r"^/api/v1/ppt/presentation/\{id\}$",
+        mcp_type=MCPType.TOOL,
+    ),
+    RouteMap(
+        methods=["GET"],
+        pattern=r"^/api/v1/ppt/template/schema$",
+        mcp_type=MCPType.TOOL,
+    ),
+    RouteMap(
+        methods=["POST"],
+        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}/edit$",
+        mcp_type=MCPType.TOOL,
+    ),
+    RouteMap(
+        methods=["POST"],
+        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}/edit-html$",
+        mcp_type=MCPType.TOOL,
+    ),
+    RouteMap(
+        methods=["POST"],
+        pattern=r"^/api/v1/ppt/canvas/validate-json$",
+        mcp_type=MCPType.TOOL,
+    ),
+    RouteMap(
+        methods=["POST"],
+        pattern=r"^/api/v1/ppt/canvas/slide/create$",
+        mcp_type=MCPType.TOOL,
+    ),
+]
+
 MCP_SMART_ROUTE_MAPS = [
     RouteMap(
         methods=["POST"],
@@ -108,6 +141,12 @@ MCP_TOOL_NAMES = {
     "create_template_api_v1_ppt_template_async_post": "start_template_generation",
     "mcp_files_upload": "upload_files",
     "check_async_task_status_api_v1_async_tasks_status__id__get": "get_job_status",
+    "get_presentation_api_v1_ppt_presentation__id__get": "get_presentation_context",
+    "get_template_schema_api_v1_ppt_template_schema_get": "get_slide_schema",
+    "canvas_edit_slide_api_v1_ppt_canvas_slide__slide_id__edit_post": "edit_slide",
+    "canvas_edit_slide_html_api_v1_ppt_canvas_slide__slide_id__edit_html_post": "edit_slide_html",
+    "canvas_validate_json_api_v1_ppt_canvas_validate_json_post": "validate_json",
+    "canvas_create_slide_api_v1_ppt_canvas_slide_create_post": "create_slide",
 }
 
 def get_mcp_route_maps(
@@ -121,6 +160,7 @@ def get_mcp_route_maps(
     if generation_mode in {"both", "smart"}:
         route_maps.extend(MCP_SMART_ROUTE_MAPS)
     route_maps.extend(MCP_SHARED_ROUTE_MAPS)
+    route_maps.extend(MCP_CANVAS_ROUTE_MAPS)
     route_maps.append(RouteMap(mcp_type=MCPType.EXCLUDE))
     return route_maps
 
@@ -269,6 +309,16 @@ unless the user separately asked to create or inspect a Standard/custom template
    arguments blindly and do not claim success.
 5. Do not stop polling solely because generation takes several minutes. First-run model
    downloads and larger decks can legitimately take longer.
+
+# Canvas Editing Workflow
+
+You can edit and extend existing presentations using the canvas tools:
+
+1. **First call:** Call `get_presentation_context` to fetch the layout details, current slides, and available slide templates.
+2. **Editing approaches:**
+   - **LLM-powered:** Call `edit_slide` or `edit_slide_html` with a prompt explaining the changes. The internal LLM will automatically adapt the slide to the layout.
+   - **JSON-direct:** For precise layout usage, call `get_slide_schema` for the desired layout ID, then structure JSON matching that exact schema. Use `validate_json` to verify correctness, and `create_slide` to add the new slide.
+3. **Completion:** Always share the returned `edit_path` URL with the user so they can view the updated deck.
 
 # Final response
 

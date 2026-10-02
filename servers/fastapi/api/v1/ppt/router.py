@@ -17,6 +17,7 @@ from api.v1.ppt.endpoints.outlines import OUTLINES_ROUTER
 from api.v1.ppt.endpoints.slide import SLIDE_ROUTER
 from api.v1.ppt.endpoints.template import TEMPLATE_ROUTER
 from api.v1.ppt.endpoints.presentation import PRESENTATION_ROUTER
+from api.v1.ppt.endpoints.canvas import CANVAS_ROUTER
 
 
 API_V1_PPT_ROUTER = APIRouter(prefix="/api/v1/ppt")
@@ -38,3 +39,4 @@ API_V1_PPT_ROUTER.include_router(PRESENTATION_ROUTER)
 API_V1_PPT_ROUTER.include_router(CHAT_ROUTER)
 API_V1_PPT_ROUTER.include_router(TEMPLATE_ROUTER)
 API_V1_PPT_ROUTER.include_router(COMMUNITY_ROUTER)
+API_V1_PPT_ROUTER.include_router(CANVAS_ROUTER)

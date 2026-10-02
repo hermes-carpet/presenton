@@ -94,6 +94,29 @@ from utils.llm_client_error_handler import handle_llm_client_exceptions
 
 TEMPLATE_ROUTER = APIRouter(prefix="/template", tags=["Templates"])
 LOGGER = logging.getLogger(__name__)
+
+
+@TEMPLATE_ROUTER.get("/schema", response_model=dict)
+async def get_template_schema(
+    presentation_id: uuid.UUID,
+    layout_id: str,
+    sql_session: AsyncSession = Depends(get_async_session),
+):
+    from models.sql.presentation import PresentationModel
+    presentation = await sql_session.get(PresentationModel, presentation_id)
+    if not presentation:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+
+    presentation_layout = presentation.get_layout()
+    slide_layout = next(
+        (l for l in presentation_layout.slides if l.id == layout_id), None
+    )
+    if not slide_layout:
+        raise HTTPException(status_code=404, detail="Layout not found")
+
+    return slide_layout.json_schema
+
+
 _TEMPLATE_LAYOUT_PATCH_LOCKS: dict[str, asyncio.Lock] = {}
 _TEMPLATE_LAYOUT_PATCH_LOCKS_GUARD = asyncio.Lock()
 ASYNC_TASK_TYPE_TEMPLATE_CREATE = "template.create"
