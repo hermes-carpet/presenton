@@ -1,3 +1,4 @@
+from models.sql.presentation import PresentationModel
 import asyncio
 import base64
 import binascii
@@ -102,12 +103,15 @@ async def get_template_schema(
     layout_id: str,
     sql_session: AsyncSession = Depends(get_async_session),
 ):
-    from models.sql.presentation import PresentationModel
+
+    from api.v1.ppt.endpoints.presentation import _get_presentation_stream_layout
     presentation = await sql_session.get(PresentationModel, presentation_id)
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
-    presentation_layout = presentation.get_layout()
+    presentation_layout = _get_presentation_stream_layout(presentation)
+    if not presentation_layout:
+        raise HTTPException(status_code=400, detail="Cannot get schema: presentation has no layouts.")
     slide_layout = next(
         (l for l in presentation_layout.slides if l.id == layout_id), None
     )

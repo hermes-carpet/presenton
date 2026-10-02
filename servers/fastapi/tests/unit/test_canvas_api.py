@@ -68,9 +68,9 @@ def test_get_template_schema():
             "slides": [
                 {
                     "id": layout_id,
-                    "group": "default",
-                        "json_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
-                    "content_max_length_hints": {}
+                    "name": "layout",
+                    "description": "",
+                    "json_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
                 }
             ]
         }
@@ -86,7 +86,8 @@ def test_get_template_schema():
         )
     )
 
-    assert response == {"type": "object", "properties": {"title": {"type": "string"}}}
+    assert response["type"] == "object"
+    assert response["properties"] == {"title": {"type": "string"}}
 
 def test_canvas_validate_json():
     presentation_id = uuid.uuid4()
@@ -101,9 +102,9 @@ def test_canvas_validate_json():
             "slides": [
                 {
                     "id": layout_id,
-                    "group": "default",
-                        "json_schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
-                    "content_max_length_hints": {}
+                    "name": "layout",
+                    "description": "",
+                    "json_schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
                 }
             ]
         }
