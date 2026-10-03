@@ -23,26 +23,34 @@ from utils.process_slides import (
 )
 from utils.schema_utils import get_schema_validation_errors
 from utils.mcp_public_urls import absolute_mcp_result_links
+from services.chat.memory_layer import PresentationChatMemoryLayer
+from models.presentation_with_slides import PresentationWithSlides
+from constants.presentation import MAX_NUMBER_OF_SLIDES
+
+# Private upstream helpers, reused instead of copied so canvas edits match the
+# generation path. tests/unit/test_canvas_api.py exercises each one; an
+# upstream rename or signature change fails those tests.
 from api.v1.ppt.endpoints.presentation import (
     _apply_template_content_to_ui,
-    _template_slide_ui,
     _get_presentation_stream_layout,
+    _presentation_response_data,
+    _template_slide_ui,
 )
-from models.presentation_with_slides import PresentationWithSlides
-from api.v1.ppt.endpoints.presentation import _presentation_response_data
-from constants.presentation import MAX_NUMBER_OF_SLIDES
 
 CANVAS_ROUTER = APIRouter(prefix="/canvas", tags=["Canvas"])
 LOGGER = logging.getLogger(__name__)
 
-
+# Slide index changes (create/delete/reorder) read the deck, compute new
+# indices and write them back without locking the presentation row. This
+# matches upstream's own slide mutations (PresentationChatMemoryLayer
+# add_blank_slide/delete_slide), so concurrent edits of one deck can still
+# race the same way they do in the chat path.
 
 
 def _is_template_layout_payload(layout: object) -> bool:
     return isinstance(layout, dict) and isinstance(layout.get("layouts"), list)
 
 async def _process_canvas_slide_assets_and_update(
-
     slide: SlideModel,
     presentation_layout_model: Any,
     presentation_layout_payload: Any,
@@ -114,6 +122,9 @@ async def canvas_edit_slide_html(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    if presentation.generation_mode != "smart":
+        raise HTTPException(status_code=400, detail="HTML editing is only supported for Smart decks.")
+
     html_to_edit = request.current_html or slide.html_content
     if not html_to_edit:
         raise HTTPException(status_code=400, detail="No HTML to edit")
@@ -148,6 +159,30 @@ async def canvas_edit_slide_html(
             "edit_path": f"/presentation?id={presentation.id}",
         },
     )
+
+
+@CANVAS_ROUTER.get("/schema", response_model=dict)
+async def canvas_get_slide_schema(
+    presentation_id: uuid.UUID,
+    layout_id: str,
+    sql_session: AsyncSession = Depends(get_async_session),
+):
+    presentation = await sql_session.get(PresentationModel, presentation_id)
+    if not presentation:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot get schema: presentation has no layouts.")
+    presentation_layout = _get_presentation_stream_layout(presentation)
+    if not presentation_layout:
+        raise HTTPException(status_code=400, detail="Cannot get schema: presentation has no layouts.")
+    slide_layout = next(
+        (l for l in presentation_layout.slides if l.id == layout_id), None
+    )
+    if not slide_layout:
+        raise HTTPException(status_code=404, detail="Layout not found")
+
+    return slide_layout.json_schema
 
 
 class ValidateJsonRequest(BaseModel):
@@ -401,30 +436,25 @@ async def canvas_delete_slide(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
-    deleted_index = slide.index
-    await sql_session.delete(slide)
-
-    # Update indices of subsequent slides
-    statement = (
-        select(SlideModel)
-        .where(SlideModel.presentation == presentation.id)
-        .where(SlideModel.index > deleted_index)
-    )
-    results = await sql_session.execute(statement)
-    subsequent_slides = results.scalars().all()
-
-    for s in subsequent_slides:
-        s.index -= 1
-        sql_session.add(s)
-
-    presentation.n_slides -= 1
-    sql_session.add(presentation)
-    await sql_session.commit()
+    # Reuse the chat path so deleting the final slide leaves a blank fallback
+    # slide (the deck is never empty) and n_slides matches the remaining slides.
+    result = await PresentationChatMemoryLayer(
+        sql_session,
+        presentation.id,
+        presentation_type=presentation.generation_mode,
+    ).delete_slide(index=slide.index)
+    if not result.get("deleted"):
+        raise HTTPException(status_code=409, detail=result.get("message"))
 
     return absolute_mcp_result_links(
         api_request,
         {
             "success": True,
+            "deleted_slide_id": result["deleted_slide_id"],
+            "blank_fallback_slide_id": (
+                result["slide_id"] if result.get("blank_fallback") else None
+            ),
+            "n_slides": presentation.n_slides,
             "edit_path": f"/presentation?id={presentation.id}",
         },
     )
