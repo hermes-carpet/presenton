@@ -15,6 +15,7 @@ Use this list when resolving merge conflicts with upstream.
 | `servers/fastapi/mcp_canvas.py` | MCP route maps, operationId → tool-name mapping, and the per-mode canvas section of the MCP instructions. |
 | `servers/fastapi/tests/unit/test_canvas_api.py` | Endpoint tests against a real in-memory SQLite session. |
 | `servers/fastapi/tests/unit/test_mcp_canvas.py` | Checks that the canvas tools are registered, exist in the OpenAPI spec, and are documented per mode. |
+| `servers/fastapi/tests/unit/test_openapi_spec_fresh.py` | Fails CI when `openai_spec.json` doesn't match `app.openapi()`. |
 | `MODS.md` | This file. |
 
 ## Upstream files touched
@@ -23,7 +24,7 @@ Use this list when resolving merge conflicts with upstream.
 | --- | --- | --- | --- |
 | `servers/fastapi/api/v1/ppt/router.py` | +1 import, +1 `include_router(CANVAS_ROUTER)` at the end | Mounts the canvas endpoints. | Take upstream, then re-add both lines. |
 | `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map in `get_mcp_route_maps`; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` in `get_mcp_instructions` | Exposes the canvas endpoints as MCP tools, only in the generation modes they support. | Take upstream, then re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
-| `servers/fastapi/openai_spec.json` | Regenerated; now includes the `/api/v1/ppt/canvas/*` paths | The MCP server builds its tools from this static spec. | Never hand-merge (it's one line). Take either side, then regenerate (below). |
+| `servers/fastapi/openai_spec.json` | Regenerated; now includes the `/api/v1/ppt/canvas/*` paths | The MCP server builds its tools from this static spec. | Never hand-merge (it's one line). The upstream-sync workflow resolves a spec-only conflict and regenerates the spec automatically; by hand: take either side, then regenerate (below). |
 | `servers/fastapi/tests/unit/test_mcp_server_auth.py` | Added the ten canvas tool names to the expected tool sets in `test_mcp_tools_follow_presentation_generation_mode` | The test lists every exposed tool per mode. | Take upstream, then re-add the canvas names to each mode's set. |
 
 ### Regenerating `openai_spec.json`
@@ -35,6 +36,8 @@ PYTHONPATH=. uv run --locked python scripts/generate_openapi_spec.py
 ```
 
 `scripts/generate_openapi_spec.py` is upstream's script; it dumps `api.main.app.openapi()`.
+The output is deterministic and doesn't depend on env vars.
+`tests/unit/test_openapi_spec_fresh.py` fails whenever the committed spec is stale.
 Upstream's committed spec can lag behind its own code, so a regenerated spec
 may also include unrelated upstream schema changes. That's expected.
 
