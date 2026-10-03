@@ -36,167 +36,62 @@ CANVAS_ROUTER = APIRouter(prefix="/canvas", tags=["Canvas"])
 LOGGER = logging.getLogger(__name__)
 
 
+
+
 def _is_template_layout_payload(layout: object) -> bool:
     return isinstance(layout, dict) and isinstance(layout.get("layouts"), list)
 
+async def _process_canvas_slide_assets_and_update(
 
-class EditSlideRequest(BaseModel):
-    prompt: str
-    language: Optional[str] = None
-    tone: Optional[str] = None
-    verbosity: Optional[str] = None
-
-
-class CanvasContextLayout(BaseModel):
-    id: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-
-class CanvasContextResponse(BaseModel):
-    presentation: PresentationWithSlides
-    generation_mode: str
-    layouts: List[CanvasContextLayout]
-
-@CANVAS_ROUTER.get("/presentation/{presentation_id}/context", response_model=CanvasContextResponse)
-async def get_canvas_context(
-    presentation_id: uuid.UUID,
-    request: Request,
-    sql_session: AsyncSession = Depends(get_async_session),
-):
-    presentation = await sql_session.get(PresentationModel, presentation_id)
-    if not presentation:
-        raise HTTPException(status_code=404, detail="Presentation not found")
-
-    slides_result = await sql_session.scalars(
-        select(SlideModel)
-        .where(SlideModel.presentation == presentation_id)
-        .order_by(SlideModel.index)
-    )
-    slides = list(slides_result)
-
-    presentation_with_slides = PresentationWithSlides(
-        **_presentation_response_data(presentation),
-        slides=slides,
-    )
-
-    layouts = []
-    if presentation.layout is not None:
-        layout = _get_presentation_stream_layout(presentation)
-        if layout:
-            layouts = [CanvasContextLayout(id=l.id, name=l.name, description=l.description) for l in layout.slides]
-
-    return CanvasContextResponse(
-        presentation=presentation_with_slides,
-        generation_mode=presentation.generation_mode,
-        layouts=layouts,
-    )
-
-@CANVAS_ROUTER.post("/slide/{slide_id}/edit", response_model=dict)
-async def canvas_edit_slide(
-    slide_id: uuid.UUID,
-    request: EditSlideRequest,
-    api_request: Request,
-    sql_session: AsyncSession = Depends(get_async_session),
-):
-    slide = await sql_session.get(SlideModel, slide_id)
-    if not slide:
-        raise HTTPException(status_code=404, detail="Slide not found")
-    presentation = await sql_session.get(PresentationModel, slide.presentation)
-    if not presentation:
-        raise HTTPException(status_code=404, detail="Presentation not found")
-
-    memory_context = await MEM0_PRESENTATION_MEMORY_SERVICE.retrieve_context(
-        presentation.id,
-        request.prompt,
-    )
-
-    if presentation.layout is None:
-        raise HTTPException(status_code=400, detail="Cannot edit slide: presentation has no layouts.")
-    presentation_layout = _get_presentation_stream_layout(presentation)
-    if not presentation_layout:
-        raise HTTPException(status_code=400, detail="Cannot edit slide: presentation has no layouts.")
-
-    slide_layout = await get_slide_layout_from_prompt(
-        request.prompt,
-        presentation_layout,
-        slide,
-        memory_context,
-    )
-
-    edited_slide_content = await get_edited_slide_content(
-        request.prompt,
-        slide,
-        request.language or presentation.language,
-        slide_layout,
-        request.tone or presentation.tone,
-        request.verbosity or presentation.verbosity,
-        presentation.instructions,
-        memory_context,
-    )
-
-    image_generation_service = ImageGenerationService(get_images_directory())
-
+    slide: SlideModel,
+    presentation_layout_model: Any,
+    presentation_layout_payload: Any,
+    new_content: dict[str, Any],
+    new_layout_id: str,
+    image_generation_service: ImageGenerationService,
+    sql_session: AsyncSession,
+) -> None:
     image_warnings: list[dict] = []
     new_assets = await process_old_and_new_slides_and_fetch_assets(
         image_generation_service,
         slide.content,
-        edited_slide_content,
-        icon_weight=presentation_layout.icon_weight,
+        new_content,
+        icon_weight=presentation_layout_model.icon_weight,
         use_template_asset_fields=(
-            _is_template_layout_payload(presentation.layout)
+            _is_template_layout_payload(presentation_layout_payload)
             or isinstance(slide.ui, dict)
         ),
         allow_image_fallback=True,
         image_warnings=image_warnings,
         old_image_target_sizes=image_target_sizes_from_template(
-            _template_slide_ui(presentation.layout, slide.layout) or slide.ui,
+            _template_slide_ui(presentation_layout_payload, slide.layout) or slide.ui,
             slide.content,
             _apply_template_content_to_ui,
         ),
         new_image_target_sizes=image_target_sizes_from_template(
-            _template_slide_ui(presentation.layout, slide_layout.id),
-            edited_slide_content,
+            _template_slide_ui(presentation_layout_payload, new_layout_id),
+            new_content,
             _apply_template_content_to_ui,
         ),
     )
+
     for warning in image_warnings:
         LOGGER.warning(
-            "Canvas slide edit image warning: slide_id=%s detail=%s",
+            "Canvas slide update image warning: slide_id=%s detail=%s",
             slide.id,
             warning.get("detail"),
         )
 
-    # Note: we mutate the slide in place as requested, or recreate if we strictly follow edit_slide.
-    # We will give it a new UUID to force NextJS updates
     slide.id = uuid.uuid4()
+    slide.content = new_content
+    slide.layout = new_layout_id
+    slide.layout_group = presentation_layout_model.name
+    slide.speaker_note = new_content.get("__speaker_note__", "")
+    slide.ui = _template_slide_ui(presentation_layout_payload, slide.layout)
+    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
+
     sql_session.add(slide)
-    slide.content = edited_slide_content
-    slide.layout = slide_layout.id
-    slide.layout_group = presentation_layout.name
-    slide.speaker_note = edited_slide_content.get("__speaker_note__", "")
-    slide.ui = _template_slide_ui(presentation.layout, slide.layout)
-    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
     sql_session.add_all(new_assets)
-
-    # Re-hydrate UI after asset fetching mutated the slide's content
-    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
-
-    await sql_session.commit()
-
-    await MEM0_PRESENTATION_MEMORY_SERVICE.store_slide_edit(
-        presentation_id=presentation.id,
-        slide_index=slide.index,
-        edit_prompt=request.prompt,
-        edited_slide_content=edited_slide_content,
-    )
-
-    return absolute_mcp_result_links(
-        api_request,
-        {
-            "slide": slide.model_dump(),
-            "edit_path": f"/presentation?id={presentation.id}",
-        },
-    )
 
 
 class EditSlideHtmlRequest(BaseModel):
@@ -380,7 +275,7 @@ async def canvas_create_slide(
 
     # Shift indices if necessary
     for s in slides:
-        if getattr(s, 'index', -1) >= target_index:
+        if s.index >= target_index:
             s.index += 1
             sql_session.add(s)
 
@@ -422,7 +317,7 @@ async def canvas_create_slide(
 
     sql_session.add(new_slide)
     sql_session.add_all(assets)
-    presentation.n_slides = (presentation.n_slides or 0) + 1
+    presentation.n_slides += 1
     sql_session.add(presentation)
     await sql_session.commit()
 
@@ -473,51 +368,15 @@ async def canvas_update_slide(
 
     image_generation_service = ImageGenerationService(get_images_directory())
 
-    image_warnings: list[dict] = []
-    new_assets = await process_old_and_new_slides_and_fetch_assets(
-        image_generation_service,
-        slide.content,
+    await _process_canvas_slide_assets_and_update(
+        slide,
+        presentation_layout,
+        presentation.layout,
         request.content,
-        icon_weight=presentation_layout.icon_weight,
-        use_template_asset_fields=(
-            _is_template_layout_payload(presentation.layout)
-            or isinstance(slide.ui, dict)
-        ),
-        allow_image_fallback=True,
-        image_warnings=image_warnings,
-        old_image_target_sizes=image_target_sizes_from_template(
-            _template_slide_ui(presentation.layout, slide.layout) or slide.ui,
-            slide.content,
-            _apply_template_content_to_ui,
-        ),
-        new_image_target_sizes=image_target_sizes_from_template(
-            _template_slide_ui(presentation.layout, slide_layout.id),
-            request.content,
-            _apply_template_content_to_ui,
-        ),
+        slide_layout.id,
+        image_generation_service,
+        sql_session,
     )
-
-    for warning in image_warnings:
-        LOGGER.warning(
-            "Canvas slide update image warning: slide_id=%s detail=%s",
-            slide.id,
-            warning.get("detail"),
-        )
-
-    slide.id = uuid.uuid4()
-    sql_session.add(slide)
-    slide.content = request.content
-    slide.layout = slide_layout.id
-    slide.layout_group = presentation_layout.name
-    slide.speaker_note = request.content.get("__speaker_note__", "")
-    slide.ui = _template_slide_ui(presentation.layout, slide.layout)
-    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
-
-    sql_session.add_all(new_assets)
-
-    # Re-hydrate UI after asset fetching mutated the slide's content
-    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
-
     await sql_session.commit()
 
     return absolute_mcp_result_links(
@@ -555,11 +414,10 @@ async def canvas_delete_slide(
     subsequent_slides = results.scalars().all()
 
     for s in subsequent_slides:
-        if getattr(s, 'index', -1) != -1:
-            s.index -= 1
-            sql_session.add(s)
+        s.index -= 1
+        sql_session.add(s)
 
-    presentation.n_slides = max(0, (presentation.n_slides or 1) - 1)
+    presentation.n_slides -= 1
     sql_session.add(presentation)
     await sql_session.commit()
 
@@ -617,10 +475,10 @@ async def canvas_reorder_slide(
     for s in slides:
         if s.id == slide.id:
             continue
-        if old_index < target_index and old_index <= getattr(s, 'index', -1) <= target_index:
+        if old_index < target_index and old_index <= s.index <= target_index:
             s.index -= 1
             sql_session.add(s)
-        elif target_index <= getattr(s, 'index', -1) < old_index:
+        elif target_index <= s.index < old_index:
             s.index += 1
             sql_session.add(s)
 
@@ -632,4 +490,126 @@ async def canvas_reorder_slide(
             "slide": slide.model_dump(),
             "edit_path": f"/presentation?id={presentation.id}",
         },
+    )
+
+class EditSlideRequest(BaseModel):
+    prompt: str
+    language: Optional[str] = None
+    tone: Optional[str] = None
+    verbosity: Optional[str] = None
+
+@CANVAS_ROUTER.post("/slide/{slide_id}/edit", response_model=dict)
+async def canvas_edit_slide(
+    slide_id: uuid.UUID,
+    request: EditSlideRequest,
+    api_request: Request,
+    sql_session: AsyncSession = Depends(get_async_session),
+):
+    slide = await sql_session.get(SlideModel, slide_id)
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+    presentation = await sql_session.get(PresentationModel, slide.presentation)
+    if not presentation:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+
+    memory_context = await MEM0_PRESENTATION_MEMORY_SERVICE.retrieve_context(
+        presentation.id,
+        request.prompt,
+    )
+
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot edit slide: presentation has no layouts.")
+    presentation_layout = _get_presentation_stream_layout(presentation)
+    if not presentation_layout:
+        raise HTTPException(status_code=400, detail="Cannot edit slide: presentation has no layouts.")
+
+    slide_layout = await get_slide_layout_from_prompt(
+        request.prompt,
+        presentation_layout,
+        slide,
+        memory_context,
+    )
+
+    edited_slide_content = await get_edited_slide_content(
+        request.prompt,
+        slide,
+        request.language or presentation.language,
+        slide_layout,
+        request.tone or presentation.tone,
+        request.verbosity or presentation.verbosity,
+        presentation.instructions,
+        memory_context,
+    )
+
+    image_generation_service = ImageGenerationService(get_images_directory())
+
+    await _process_canvas_slide_assets_and_update(
+        slide,
+        presentation_layout,
+        presentation.layout,
+        edited_slide_content,
+        slide_layout.id,
+        image_generation_service,
+        sql_session,
+    )
+    await sql_session.commit()
+
+    await MEM0_PRESENTATION_MEMORY_SERVICE.store_slide_edit(
+        presentation_id=presentation.id,
+        slide_index=slide.index,
+        edit_prompt=request.prompt,
+        edited_slide_content=edited_slide_content,
+    )
+
+    return absolute_mcp_result_links(
+        api_request,
+        {
+            "slide": slide.model_dump(),
+            "edit_path": f"/presentation?id={presentation.id}",
+        },
+    )
+
+
+class CanvasContextLayout(BaseModel):
+    id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class CanvasContextResponse(BaseModel):
+    presentation: PresentationWithSlides
+    generation_mode: str
+    layouts: List[CanvasContextLayout]
+
+@CANVAS_ROUTER.get("/presentation/{presentation_id}/context", response_model=CanvasContextResponse)
+async def get_canvas_context(
+    presentation_id: uuid.UUID,
+    request: Request,
+    sql_session: AsyncSession = Depends(get_async_session),
+):
+    presentation = await sql_session.get(PresentationModel, presentation_id)
+    if not presentation:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+
+    slides_result = await sql_session.scalars(
+        select(SlideModel)
+        .where(SlideModel.presentation == presentation_id)
+        .order_by(SlideModel.index)
+    )
+    slides = list(slides_result)
+
+    presentation_with_slides = PresentationWithSlides(
+        **_presentation_response_data(presentation),
+        slides=slides,
+    )
+
+    layouts = []
+    if presentation.layout is not None:
+        layout = _get_presentation_stream_layout(presentation)
+        if layout:
+            layouts = [CanvasContextLayout(id=l.id, name=l.name, description=l.description) for l in layout.slides]
+
+    return CanvasContextResponse(
+        presentation=presentation_with_slides,
+        generation_mode=presentation.generation_mode,
+        layouts=layouts,
     )
