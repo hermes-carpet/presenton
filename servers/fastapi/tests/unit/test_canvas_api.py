@@ -1,24 +1,29 @@
 import asyncio
-from types import SimpleNamespace
+import json
 
+import httpx
+import httpx2
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI
+from fastmcp import Client, FastMCP
+from fastmcp.server.providers.openapi import MCPType, RouteMap
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import select
 
-from api.v1.ppt.endpoints import canvas as canvas_endpoint
-from constants.presentation import MAX_NUMBER_OF_SLIDES
+import mcp_canvas
+from api.v1.ppt.endpoints.canvas import CANVAS_ROUTER
 from models.sql.image_asset import ImageAsset
 from models.sql.presentation import PresentationModel, PresentationVersion
 from models.sql.slide import SlideModel
+from services.canvas_tool_registry import get_canvas_tools
 from services.chat.memory_layer import BLANK_SLIDE_LAYOUT_ID
+from services.database import get_async_session
 
 LAYOUT_ID = "hero"
-IMAGE_URL = "https://example.com/generated.png"
-API_REQUEST = SimpleNamespace(headers={})
+BASE_URL = "http://presenton.test"
+TOOLS = "/api/v1/ppt/canvas/presentation/{id}/tools/{tool}"
 
-# Real Template V2 payload: the canvas endpoints derive the JSON schema from the
-# components, so this exercises _get_presentation_stream_layout's template branch.
+# Real Template V2 payload, so layout tools read the deck the way they do in the app.
 TEMPLATE_LAYOUT = {
     "name": "canvas-test",
     "layouts": [
@@ -49,37 +54,42 @@ TEMPLATE_LAYOUT = {
     ],
 }
 
-
-def _content(title: str = "Hello", prompt: str = "a cat") -> dict:
-    return {"main": {"title": title, "photo": {"image_prompt": prompt}}}
-
-
-def _ui_element(ui: dict, name: str) -> dict:
-    elements = ui["components"][0]["elements"]
-    return next(element for element in elements if element["name"] == name)
+VALID_SMART_HTML = (
+    '<section data-slide-type="content" data-slide-title="Updated title" '
+    'class="relative h-[720px] w-[1280px] overflow-hidden bg-white">'
+    '<h2 class="text-5xl">Updated title</h2></section>'
+)
 
 
-class _Db:
-    """In-memory SQLite database with the tables the canvas endpoints touch."""
+class _Deck:
+    """In-memory SQLite database plus an app serving only the canvas router."""
 
     def __init__(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.session_maker = async_sessionmaker(self.engine, expire_on_commit=False)
+        self.app = FastAPI()
+        self.app.include_router(CANVAS_ROUTER, prefix="/api/v1/ppt")
 
-    async def setup(self):
+        async def session():
+            async with self.session_maker() as sql_session:
+                yield sql_session
+
+        self.app.dependency_overrides[get_async_session] = session
+
+    async def setup(self, *rows):
         async with self.engine.begin() as connection:
-            await connection.run_sync(PresentationModel.__table__.create)
-            await connection.run_sync(SlideModel.__table__.create)
-            await connection.run_sync(ImageAsset.__table__.create)
+            for model in (PresentationModel, SlideModel, ImageAsset):
+                await connection.run_sync(model.__table__.create)
+        async with self.session_maker() as sql_session:
+            sql_session.add_all(rows)
+            await sql_session.commit()
 
-    async def add(self, *rows):
-        async with self.session_maker() as session:
-            session.add_all(rows)
-            await session.commit()
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url=BASE_URL)
 
     async def slides(self, presentation_id):
-        async with self.session_maker() as session:
-            result = await session.scalars(
+        async with self.session_maker() as sql_session:
+            result = await sql_session.scalars(
                 select(SlideModel)
                 .where(SlideModel.presentation == presentation_id)
                 .order_by(SlideModel.index)
@@ -87,22 +97,18 @@ class _Db:
             return list(result)
 
     async def presentation(self, presentation_id):
-        async with self.session_maker() as session:
-            return await session.get(PresentationModel, presentation_id)
-
-    async def call(self, endpoint, **kwargs):
-        async with self.session_maker() as session:
-            return await endpoint(sql_session=session, **kwargs)
+        async with self.session_maker() as sql_session:
+            return await sql_session.get(PresentationModel, presentation_id)
 
 
-def _run(scenario):
+def _run(rows, scenario):
     async def runner():
-        db = _Db()
-        await db.setup()
+        deck = _Deck()
+        await deck.setup(*rows)
         try:
-            return await scenario(db)
+            return await scenario(deck)
         finally:
-            await db.engine.dispose()
+            await deck.engine.dispose()
 
     return asyncio.run(runner())
 
@@ -113,6 +119,7 @@ def _standard_deck(n_slides: int = 0):
         content="deck",
         n_slides=n_slides,
         language="English",
+        title="Standard deck",
         layout=TEMPLATE_LAYOUT,
         generation_mode="standard",
     )
@@ -122,7 +129,7 @@ def _standard_deck(n_slides: int = 0):
             layout_group="canvas-test",
             layout=LAYOUT_ID,
             index=index,
-            content=_content(f"Slide {index}"),
+            content={"main": {"title": f"Slide {index}"}},
         )
         for index in range(n_slides)
     ]
@@ -152,363 +159,172 @@ def _smart_deck(n_slides: int = 1):
     return presentation, slides
 
 
-@pytest.fixture
-def fake_assets(monkeypatch):
-    """Simulate image fetching by writing an image_url next to each prompt."""
-
-    async def fake_process_slide(_service, slide, **_kwargs):
-        slide.content["main"]["photo"]["image_url"] = IMAGE_URL
-        return []
-
-    async def fake_process_old_and_new(_service, _old, new_content, **_kwargs):
-        new_content["main"]["photo"]["image_url"] = IMAGE_URL
-        return []
-
-    monkeypatch.setattr(canvas_endpoint, "process_slide_and_fetch_assets", fake_process_slide)
-    monkeypatch.setattr(
-        canvas_endpoint,
-        "process_old_and_new_slides_and_fetch_assets",
-        fake_process_old_and_new,
-    )
-
-
-@pytest.fixture
-def fake_memory(monkeypatch):
-    calls = []
-
-    async def retrieve_context(_presentation_id, _query):
-        return ""
-
-    async def store_slide_edit(**kwargs):
-        calls.append(kwargs)
-
-    memory = canvas_endpoint.MEM0_PRESENTATION_MEMORY_SERVICE
-    monkeypatch.setattr(memory, "retrieve_context", retrieve_context)
-    monkeypatch.setattr(memory, "store_slide_edit", store_slide_edit)
-    return calls
-
-
-# --- context / schema / validation -------------------------------------------
-
-
-def test_context_lists_template_layouts_and_slides():
-    presentation, slides = _standard_deck(2)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        return await db.call(
-            canvas_endpoint.get_canvas_context,
-            presentation_id=presentation.id,
-            request=API_REQUEST,
+async def _call_tool(deck, presentation, tool, arguments=None):
+    async with deck.client() as client:
+        return await client.post(
+            TOOLS.format(id=presentation.id, tool=tool),
+            json=arguments if arguments is not None else {},
         )
 
-    response = _run(scenario)
 
-    assert response.generation_mode == "standard"
-    assert [(layout.id, layout.name) for layout in response.layouts] == [(LAYOUT_ID, "Hero")]
-    assert [slide.index for slide in response.presentation.slides] == [0, 1]
-
-
-def test_slide_schema_is_derived_from_template_components():
-    presentation, _ = _standard_deck()
-
-    async def scenario(db):
-        await db.add(presentation)
-        return await db.call(
-            canvas_endpoint.canvas_get_slide_schema,
-            presentation_id=presentation.id,
-            layout_id=LAYOUT_ID,
-        )
-
-    schema = _run(scenario)
-
-    main = schema["properties"]["main"]["properties"]
-    assert set(main) == {"title", "photo"}
-    assert main["photo"]["required"] == ["image_prompt"]
-
-
-def test_slide_schema_unknown_layout_returns_404():
-    presentation, _ = _standard_deck()
-
-    async def scenario(db):
-        await db.add(presentation)
-        return await db.call(
-            canvas_endpoint.canvas_get_slide_schema,
-            presentation_id=presentation.id,
-            layout_id="missing",
-        )
-
-    with pytest.raises(HTTPException) as exc:
-        _run(scenario)
-    assert exc.value.status_code == 404
-
-
-def test_validate_json_reports_schema_errors():
-    presentation, _ = _standard_deck()
-
-    def request(content):
-        return canvas_endpoint.ValidateJsonRequest(
-            presentation_id=presentation.id, layout_id=LAYOUT_ID, content=content
-        )
-
-    async def scenario(db):
-        await db.add(presentation)
-        valid = await db.call(canvas_endpoint.canvas_validate_json, request=request(_content()))
-        invalid = await db.call(canvas_endpoint.canvas_validate_json, request=request({"main": {}}))
-        return valid, invalid
-
-    valid, invalid = _run(scenario)
-
-    assert valid.valid is True and valid.errors == []
-    assert invalid.valid is False and invalid.errors
-
-
-# --- create ------------------------------------------------------------------
-
-
-def _create(db, presentation, index=None, content=None):
-    return db.call(
-        canvas_endpoint.canvas_create_slide,
-        request=canvas_endpoint.CreateSlideRequest(
-            presentation_id=presentation.id,
-            layout_id=LAYOUT_ID,
-            content=content or _content("New"),
-            index=index,
-        ),
-        api_request=API_REQUEST,
-    )
+# --- context -------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("requested_index", "expected_index"),
-    [(None, 2), (1, 1), (0, 0), (-5, 0), (99, 2)],
+    ("factory", "deck_type", "present", "absent"),
+    [
+        (_standard_deck, "standard", {"addElement": "addElement", "saveSlide": "saveSlide"}, {"getSmartPresentationContext"}),
+        (_smart_deck, "smart", {"saveSlide": "smartSaveSlide", "searchSlide": "searchSlide"}, {"addElement"}),
+    ],
 )
-def test_create_slide_clamps_index_and_shifts_later_slides(
-    fake_assets, requested_index, expected_index
-):
+def test_context_lists_deck_tools_and_editing_guide(factory, deck_type, present, absent):
+    presentation, slides = factory(2)
+
+    async def scenario(deck):
+        async with deck.client() as client:
+            return await client.get(f"/api/v1/ppt/canvas/presentation/{presentation.id}/context")
+
+    response = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generation_mode"] == deck_type
+    assert [(slide["index"], slide["id"]) for slide in body["slides"]] == [
+        (0, str(slides[0].id)),
+        (1, str(slides[1].id)),
+    ]
+    for tool_name, mcp_name in present.items():
+        assert body["tools"][tool_name] == mcp_name
+    assert not absent & set(body["tools"])
+    assert "Slide Number Rules" in body["editing_guide"] or "0-based" in body["editing_guide"]
+    assert body["edit_path"] == f"/presentation?id={presentation.id}"
+
+
+# --- tool bridge ---------------------------------------------------------------
+
+
+def test_get_slide_at_index_reads_the_slide():
     presentation, slides = _standard_deck(2)
 
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        response = await _create(db, presentation, index=requested_index)
-        return response, await db.slides(presentation.id), await db.presentation(presentation.id)
+    async def scenario(deck):
+        return await _call_tool(deck, presentation, "getSlideAtIndex", {"index": 1, "includeFullContent": True})
 
-    response, stored, stored_presentation = _run(scenario)
+    response = _run([presentation, *slides], scenario)
 
-    titles = [slide.content["main"]["title"] for slide in stored]
-    expected_titles = ["Slide 0", "Slide 1"]
-    expected_titles.insert(expected_index, "New")
-    assert titles == expected_titles
+    assert response.status_code == 200
+    assert "Slide 1" in json.dumps(response.json()["result"])
+
+
+def test_add_new_slide_inserts_and_shifts_later_slides():
+    presentation, slides = _standard_deck(2)
+
+    async def scenario(deck):
+        response = await _call_tool(deck, presentation, "addNewSlide", {"index": 1})
+        return response, await deck.slides(presentation.id), await deck.presentation(presentation.id)
+
+    response, stored, stored_presentation = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200, response.text
     assert [slide.index for slide in stored] == [0, 1, 2]
-    assert response["slide"]["index"] == expected_index
+    assert [slide.id for slide in stored][0] == slides[0].id
+    assert stored[1].layout == BLANK_SLIDE_LAYOUT_ID
+    assert stored[2].id == slides[1].id
     assert stored_presentation.n_slides == 3
-
-
-def test_create_slide_ui_contains_fetched_image(fake_assets):
-    presentation, _ = _standard_deck()
-
-    async def scenario(db):
-        await db.add(presentation)
-        await _create(db, presentation)
-        return await db.slides(presentation.id)
-
-    (created,) = _run(scenario)
-
-    assert created.content["main"]["photo"]["image_url"] == IMAGE_URL
-    assert _ui_element(created.ui, "photo")["data"] == IMAGE_URL
-
-
-def test_create_slide_rejects_invalid_content():
-    presentation, _ = _standard_deck()
-
-    async def scenario(db):
-        await db.add(presentation)
-        return await _create(db, presentation, content={"main": {}})
-
-    with pytest.raises(HTTPException) as exc:
-        _run(scenario)
-    assert exc.value.status_code == 400
-    assert exc.value.detail["message"] == "Invalid JSON content"
-
-
-def test_create_slide_respects_max_slides(fake_assets):
-    presentation, slides = _standard_deck(MAX_NUMBER_OF_SLIDES)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        return await _create(db, presentation)
-
-    with pytest.raises(HTTPException) as exc:
-        _run(scenario)
-    assert exc.value.status_code == 400
-    assert "maximum slide limit" in exc.value.detail
-
-
-# --- update / edit -----------------------------------------------------------
-
-
-def test_update_slide_rebuilds_ui_with_fetched_image(fake_assets):
-    presentation, slides = _standard_deck(1)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        response = await db.call(
-            canvas_endpoint.canvas_update_slide,
-            slide_id=slides[0].id,
-            request=canvas_endpoint.UpdateSlideRequest(
-                layout_id=LAYOUT_ID, content=_content("Updated", "a dog")
-            ),
-            api_request=API_REQUEST,
-        )
-        return response, await db.slides(presentation.id)
-
-    response, (stored,) = _run(scenario)
-
-    assert response["slide"]["content"]["main"]["title"] == "Updated"
-    assert stored.content["main"]["title"] == "Updated"
-    assert _ui_element(stored.ui, "photo")["data"] == IMAGE_URL
-    assert stored.index == 0
-
-
-def test_edit_slide_applies_llm_content(fake_assets, fake_memory, monkeypatch):
-    presentation, slides = _standard_deck(1)
-    seen = {}
-
-    async def fake_layout(prompt, presentation_layout, _slide, _memory):
-        seen["layout_prompt"] = prompt
-        return next(layout for layout in presentation_layout.slides if layout.id == LAYOUT_ID)
-
-    async def fake_content(prompt, _slide, language, _slide_layout, *_args):
-        seen["content_prompt"] = prompt
-        seen["language"] = language
-        return _content("From LLM", "a bird")
-
-    monkeypatch.setattr(canvas_endpoint, "get_slide_layout_from_prompt", fake_layout)
-    monkeypatch.setattr(canvas_endpoint, "get_edited_slide_content", fake_content)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        response = await db.call(
-            canvas_endpoint.canvas_edit_slide,
-            slide_id=slides[0].id,
-            request=canvas_endpoint.EditSlideRequest(prompt="make it about birds"),
-            api_request=API_REQUEST,
-        )
-        return response, await db.slides(presentation.id)
-
-    response, (stored,) = _run(scenario)
-
-    assert seen == {
-        "layout_prompt": "make it about birds",
-        "content_prompt": "make it about birds",
-        "language": "English",
-    }
-    assert stored.content["main"]["title"] == "From LLM"
-    assert _ui_element(stored.ui, "photo")["data"] == IMAGE_URL
-    assert response["edit_path"].endswith(f"/presentation?id={presentation.id}")
-    assert fake_memory[0]["edit_prompt"] == "make it about birds"
-
-
-def test_edit_slide_html_applies_llm_html(fake_memory, monkeypatch):
-    presentation, slides = _smart_deck(1)
-
-    async def fake_html(prompt, html, _memory):
-        return f"<section>{prompt}|{html}</section>"
-
-    monkeypatch.setattr(canvas_endpoint, "get_edited_slide_html", fake_html)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        await db.call(
-            canvas_endpoint.canvas_edit_slide_html,
-            slide_id=slides[0].id,
-            request=canvas_endpoint.EditSlideHtmlRequest(prompt="bigger"),
-            api_request=API_REQUEST,
-        )
-        return await db.slides(presentation.id)
-
-    (stored,) = _run(scenario)
-
-    assert stored.html_content == "<section>bigger|<section>Slide 0</section></section>"
-    assert fake_memory[0]["edit_prompt"] == "bigger"
-
-
-def test_update_slide_html_saves_html_on_smart_deck():
-    presentation, slides = _smart_deck(1)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        await db.call(
-            canvas_endpoint.canvas_update_slide_html,
-            slide_id=slides[0].id,
-            request=canvas_endpoint.UpdateSlideHtmlRequest(html="<section>new</section>"),
-            api_request=API_REQUEST,
-        )
-        return await db.slides(presentation.id)
-
-    (stored,) = _run(scenario)
-    assert stored.html_content == "<section>new</section>"
-
-
-# --- delete ------------------------------------------------------------------
-
-
-def _delete_and_reload(presentation, slides, slide_to_delete):
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        response = await db.call(
-            canvas_endpoint.canvas_delete_slide,
-            slide_id=slide_to_delete.id,
-            api_request=API_REQUEST,
-        )
-        return response, await db.slides(presentation.id), await db.presentation(presentation.id)
-
-    return _run(scenario)
 
 
 def test_delete_slide_shifts_later_slides_and_decrements_count():
     presentation, slides = _standard_deck(3)
 
-    response, stored, stored_presentation = _delete_and_reload(presentation, slides, slides[0])
+    async def scenario(deck):
+        response = await _call_tool(deck, presentation, "deleteSlide", {"index": 0})
+        return response, await deck.slides(presentation.id), await deck.presentation(presentation.id)
 
-    assert response["deleted_slide_id"] == str(slides[0].id)
-    assert response["blank_fallback_slide_id"] is None
-    assert [(slide.id, slide.index) for slide in stored] == [
-        (slides[1].id, 0),
-        (slides[2].id, 1),
-    ]
+    response, stored, stored_presentation = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200, response.text
+    assert [(slide.id, slide.index) for slide in stored] == [(slides[1].id, 0), (slides[2].id, 1)]
     assert stored_presentation.n_slides == 2
-    assert response["n_slides"] == 2
 
 
-def test_delete_last_standard_slide_leaves_blank_fallback():
+def test_delete_last_slide_leaves_blank_fallback():
     presentation, slides = _standard_deck(1)
 
-    response, stored, stored_presentation = _delete_and_reload(presentation, slides, slides[0])
+    async def scenario(deck):
+        response = await _call_tool(deck, presentation, "deleteSlide", {"index": 0})
+        return response, await deck.slides(presentation.id)
 
+    response, stored = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200
     (fallback,) = stored
     assert fallback.id != slides[0].id
-    assert fallback.index == 0
     assert fallback.layout == BLANK_SLIDE_LAYOUT_ID
-    assert fallback.ui is not None
-    assert response["blank_fallback_slide_id"] == str(fallback.id)
-    assert stored_presentation.n_slides == 1
+    assert response.json()["result"]["blank_fallback"] is True
 
 
-def test_delete_last_smart_slide_leaves_blank_html_fallback():
+def test_smart_save_slide_saves_html():
     presentation, slides = _smart_deck(1)
 
-    response, stored, stored_presentation = _delete_and_reload(presentation, slides, slides[0])
+    async def scenario(deck):
+        response = await _call_tool(
+            deck,
+            presentation,
+            "smartSaveSlide",
+            {"html": VALID_SMART_HTML, "index": 0, "replaceOldSlideAtIndex": True, "speakerNote": None},
+        )
+        return response, await deck.slides(presentation.id)
 
-    (fallback,) = stored
-    assert fallback.id != slides[0].id
-    assert fallback.layout == "smart-html"
-    assert "Untitled slide" in fallback.html_content
-    assert response["blank_fallback_slide_id"] == str(fallback.id)
-    assert stored_presentation.n_slides == 1
+    response, (stored,) = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["saved"] is True
+    assert "Updated title" in stored.html_content
 
 
-# --- reorder -----------------------------------------------------------------
+def test_tool_failure_returns_assistant_recovery_guidance():
+    presentation, slides = _standard_deck(1)
+
+    async def scenario(deck):
+        response = await _call_tool(deck, presentation, "deleteSlide", {"index": "first"})
+        return response, await deck.slides(presentation.id)
+
+    response, stored = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["ok"] is False
+    assert detail["tool"] == "deleteSlide"
+    assert "recovery" in detail
+    assert [slide.id for slide in stored] == [slides[0].id]
+
+
+@pytest.mark.parametrize(
+    ("factory", "tool"),
+    [(_smart_deck, "addElement"), (_smart_deck, "saveSlide"), (_standard_deck, "smartSaveSlide")],
+)
+def test_tool_for_other_deck_type_is_rejected(factory, tool):
+    presentation, slides = factory(1)
+
+    async def scenario(deck):
+        return await _call_tool(deck, presentation, tool, {"index": 0})
+
+    response = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 400
+    assert "get_presentation_context" in response.json()["detail"]
+
+
+def test_unknown_presentation_returns_404():
+    presentation, _ = _standard_deck()
+    other, _ = _standard_deck()
+
+    async def scenario(deck):
+        return await _call_tool(deck, other, "getSlideAtIndex", {"index": 0})
+
+    assert _run([presentation], scenario).status_code == 404
+
+
+# --- reorder -------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -519,129 +335,92 @@ def test_delete_last_smart_slide_leaves_blank_html_fallback():
         (0, 1, [1, 0, 2]),
         (1, 99, [0, 2, 1]),
         (1, -3, [1, 0, 2]),
+        (1, 1, [0, 1, 2]),
     ],
 )
 def test_reorder_slide_shifts_other_slides(moved, new_index, expected_order):
     presentation, slides = _standard_deck(3)
 
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        response = await db.call(
-            canvas_endpoint.canvas_reorder_slide,
-            slide_id=slides[moved].id,
-            request=canvas_endpoint.ReorderSlideRequest(new_index=new_index),
-            api_request=API_REQUEST,
-        )
-        return response, await db.slides(presentation.id)
+    async def scenario(deck):
+        async with deck.client() as client:
+            response = await client.patch(
+                f"/api/v1/ppt/canvas/slide/{slides[moved].id}/reorder",
+                json={"new_index": new_index},
+            )
+        return response, await deck.slides(presentation.id)
 
-    response, stored = _run(scenario)
+    response, stored = _run([presentation, *slides], scenario)
 
+    assert response.status_code == 200
     assert [slide.id for slide in stored] == [slides[i].id for i in expected_order]
     assert [slide.index for slide in stored] == [0, 1, 2]
-    assert response["slide"]["index"] == expected_order.index(moved)
+    assert response.json()["slide"]["index"] == expected_order.index(moved)
 
 
-# --- generation-mode guards --------------------------------------------------
+# --- registry and MCP end to end -------------------------------------------------
 
 
-def test_smart_deck_context_has_no_layouts():
-    presentation, slides = _smart_deck(1)
+def test_registry_covers_every_assistant_tool_once():
+    from services.canvas_tool_registry import _chat_tool_definitions
 
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        return await db.call(
-            canvas_endpoint.get_canvas_context,
-            presentation_id=presentation.id,
-            request=API_REQUEST,
-        )
+    for deck_type in ("standard", "smart"):
+        expected = set(_chat_tool_definitions(deck_type))
+        exposed = [tool.tool_name for tool in get_canvas_tools() if deck_type in tool.deck_types]
+        assert sorted(exposed) == sorted(expected)
 
-    response = _run(scenario)
-    assert response.generation_mode == "smart"
-    assert response.layouts == []
-    assert len(response.presentation.slides) == 1
+    mcp_names = [tool.mcp_name for tool in get_canvas_tools()]
+    assert len(mcp_names) == len(set(mcp_names))
+    for tool in get_canvas_tools():
+        assert "$ref" not in json.dumps(tool.input_schema), tool.mcp_name
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda db, p, s: db.call(
-            canvas_endpoint.canvas_get_slide_schema, presentation_id=p.id, layout_id="x"
-        ),
-        lambda db, p, s: db.call(
-            canvas_endpoint.canvas_validate_json,
-            request=canvas_endpoint.ValidateJsonRequest(
-                presentation_id=p.id, layout_id="x", content={}
-            ),
-        ),
-        lambda db, p, s: db.call(
-            canvas_endpoint.canvas_create_slide,
-            request=canvas_endpoint.CreateSlideRequest(
-                presentation_id=p.id, layout_id="x", content={}
-            ),
-            api_request=API_REQUEST,
-        ),
-        lambda db, p, s: db.call(
-            canvas_endpoint.canvas_update_slide,
-            slide_id=s.id,
-            request=canvas_endpoint.UpdateSlideRequest(layout_id="x", content={}),
-            api_request=API_REQUEST,
-        ),
-        lambda db, p, s: db.call(
-            canvas_endpoint.canvas_edit_slide,
-            slide_id=s.id,
-            request=canvas_endpoint.EditSlideRequest(prompt="x"),
-            api_request=API_REQUEST,
-        ),
-    ],
-    ids=["schema", "validate_json", "create", "update", "edit"],
-)
-def test_standard_endpoints_reject_smart_decks(fake_memory, call):
-    presentation, slides = _smart_deck(1)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        return await call(db, presentation, slides[0])
-
-    with pytest.raises(HTTPException) as exc:
-        _run(scenario)
-    assert exc.value.status_code == 400
+def _mcp_server(deck):
+    client = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=deck.app), base_url=BASE_URL)
+    server = FastMCP.from_openapi(
+        openapi_spec=deck.app.openapi(),
+        client=client,
+        route_maps=[*mcp_canvas.get_canvas_route_maps("both"), RouteMap(mcp_type=MCPType.EXCLUDE)],
+        mcp_names=mcp_canvas.MCP_CANVAS_TOOL_NAMES,
+    )
+    return server, client
 
 
-@pytest.mark.parametrize(
-    "request_factory",
-    [
-        lambda s: (
-            canvas_endpoint.canvas_update_slide_html,
-            canvas_endpoint.UpdateSlideHtmlRequest(html="<p>new</p>"),
-        ),
-        lambda s: (
-            canvas_endpoint.canvas_edit_slide_html,
-            canvas_endpoint.EditSlideHtmlRequest(prompt="x", current_html="<p>new</p>"),
-        ),
-    ],
-    ids=["update_html", "edit_html"],
-)
-def test_smart_html_endpoints_reject_standard_decks(fake_memory, monkeypatch, request_factory):
-    presentation, slides = _standard_deck(1)
+def test_mcp_tools_edit_a_deck_end_to_end():
+    presentation, slides = _standard_deck(2)
 
-    async def fail_html(*_args):
-        raise AssertionError("LLM must not be called for a Standard deck")
-
-    monkeypatch.setattr(canvas_endpoint, "get_edited_slide_html", fail_html)
-
-    async def scenario(db):
-        await db.add(presentation, *slides)
-        endpoint, request = request_factory(slides[0])
+    async def scenario(deck):
+        server, http_client = _mcp_server(deck)
         try:
-            await db.call(
-                endpoint, slide_id=slides[0].id, request=request, api_request=API_REQUEST
-            )
-        except HTTPException as exc:
-            return exc, await db.slides(presentation.id)
-        raise AssertionError("expected HTTPException")
+            async with Client(server) as mcp:
+                tools = {tool.name: tool for tool in await mcp.list_tools()}
+                layouts = await mcp.call_tool(
+                    "getAvailableLayouts", {"presentation_id": str(presentation.id)}
+                )
+                deleted = await mcp.call_tool(
+                    "deleteSlide", {"presentation_id": str(presentation.id), "index": 0}
+                )
+                failed = await mcp.call_tool(
+                    "deleteSlide",
+                    {"presentation_id": str(presentation.id), "index": 5},
+                    raise_on_error=False,
+                )
+                rejected = await mcp.call_tool(
+                    "smartSaveSlide",
+                    {"presentation_id": str(presentation.id), "html": "<p></p>", "index": 0,
+                     "replaceOldSlideAtIndex": True, "speakerNote": None},
+                    raise_on_error=False,
+                )
+        finally:
+            await http_client.aclose()
+        return tools, layouts, deleted, failed, rejected, await deck.slides(presentation.id)
 
-    exc, (stored,) = _run(scenario)
+    tools, layouts, deleted, failed, rejected, stored = _run([presentation, *slides], scenario)
 
-    assert exc.status_code == 400
-    assert stored.id == slides[0].id
-    assert stored.html_content is None
+    assert mcp_canvas.get_canvas_tool_names("both") == set(tools)
+    assert set(tools["addElement"].input_schema["properties"]) >= {"presentation_id", "index", "element"}
+    assert "hero" in json.dumps(layouts.structured_content)
+    assert deleted.structured_content["result"]["deleted"] is True
+    assert [slide.id for slide in stored] == [slides[1].id]
+    assert "No slide found" in json.dumps(failed.structured_content or failed.content[0].text)
+    assert rejected.is_error
+    assert "get_presentation_context" in rejected.content[0].text

@@ -1,31 +1,54 @@
 # Fork modifications
 
-This fork adds canvas slide editing for MCP clients on top of upstream
-[presenton/presenton](https://github.com/presenton/presenton). Mod code lives in
-new files. Edits to upstream files are kept to small hook lines so upstream
-merges stay easy.
+This fork lets coding agents (e.g. Claude Code connected over HTTP MCP to a
+headless Presenton server) edit decks with **the same tools Presenton's in-app
+assistant uses**, instead of only relaying prompts to the internal LLM.
 
-Use this list when resolving merge conflicts with upstream.
+It bridges upstream's chat tool registry (`services/chat/tools.py` →
+`ChatTools`) to HTTP routes, and from there to MCP tools. Tools that upstream
+adds or changes are picked up automatically. Mod code lives in new files; edits
+to upstream files are a few hook lines.
+
+Use this file as the checklist when resolving merge conflicts with upstream.
+
+## How it works
+
+- `services/canvas_tool_registry.py` lists `ChatTools.get_tool_definitions()` for
+  Standard and Smart decks. A tool both deck types share gets one route. If the
+  two deck types define the same name with different arguments, the Smart
+  variant is named `smart<Name>` (currently only `smartSaveSlide`).
+- `api/v1/ppt/endpoints/canvas.py` registers
+  `POST /api/v1/ppt/canvas/presentation/{presentation_id}/tools/<tool>` per tool. It
+  runs `ChatTools.execute_tool_call()` exactly as the chat service does, including
+  the assistant's argument repair. Failures return 422 with the assistant's
+  error and recovery guidance. It also serves:
+  - `GET .../presentation/{id}/context` (`get_presentation_context`): deck type,
+    slides, the tool-name map, and `editing_guide` (the in-app assistant's
+    system prompt for that deck type).
+  - `PATCH .../slide/{id}/reorder` (`reorder_slide`); the chat tools have no reorder.
+- `mcp_canvas.py` exposes those routes as MCP tools for the enabled generation
+  mode(s), and adds a short section to the MCP instructions.
 
 ## New files (mod only; upstream never touches these)
 
 | File | Purpose |
 | --- | --- |
-| `servers/fastapi/api/v1/ppt/endpoints/canvas.py` | `/api/v1/ppt/canvas/*` endpoints: context, slide schema, validate, create, update, LLM edit, HTML edit/update, delete, reorder. |
-| `servers/fastapi/mcp_canvas.py` | MCP route maps, operationId → tool-name mapping, and the per-mode canvas section of the MCP instructions. |
-| `servers/fastapi/tests/unit/test_canvas_api.py` | Endpoint tests against a real in-memory SQLite session. |
-| `servers/fastapi/tests/unit/test_mcp_canvas.py` | Checks that the canvas tools are registered, exist in the OpenAPI spec, and are documented per mode. |
+| `servers/fastapi/services/canvas_tool_registry.py` | Derives the exposed tools from `ChatTools`. |
+| `servers/fastapi/api/v1/ppt/endpoints/canvas.py` | Tool bridge routes, deck context, reorder. |
+| `servers/fastapi/mcp_canvas.py` | MCP route maps, tool names, instructions. |
+| `servers/fastapi/tests/unit/test_canvas_api.py` | Bridge, context and reorder tests against a real in-memory SQLite DB, plus an end-to-end MCP test. |
+| `servers/fastapi/tests/unit/test_mcp_canvas.py` | Registration, spec and per-mode exposure tests. |
 | `servers/fastapi/tests/unit/test_openapi_spec_fresh.py` | Fails CI when `openai_spec.json` doesn't match `app.openapi()`. |
 | `MODS.md` | This file. |
 
 ## Upstream files touched
 
-| File | Change | Why | On conflict |
-| --- | --- | --- | --- |
-| `servers/fastapi/api/v1/ppt/router.py` | +1 import, +1 `include_router(CANVAS_ROUTER)` at the end | Mounts the canvas endpoints. | Take upstream, then re-add both lines. |
-| `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map in `get_mcp_route_maps`; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` in `get_mcp_instructions` | Exposes the canvas endpoints as MCP tools, only in the generation modes they support. | Take upstream, then re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
-| `servers/fastapi/openai_spec.json` | Regenerated; now includes the `/api/v1/ppt/canvas/*` paths | The MCP server builds its tools from this static spec. | Never hand-merge (it's one line). The upstream-sync workflow resolves a spec-only conflict and regenerates the spec automatically; by hand: take either side, then regenerate (below). |
-| `servers/fastapi/tests/unit/test_mcp_server_auth.py` | Added the ten canvas tool names to the expected tool sets in `test_mcp_tools_follow_presentation_generation_mode` | The test lists every exposed tool per mode. | Take upstream, then re-add the canvas names to each mode's set. |
+| File | Change | On conflict |
+| --- | --- | --- |
+| `servers/fastapi/api/v1/ppt/router.py` | +1 import, +1 `include_router(CANVAS_ROUTER)` at the end | Take upstream, re-add both lines. |
+| `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` | Take upstream, re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
+| `servers/fastapi/tests/unit/test_mcp_server_auth.py` | +1 import; `test_mcp_tools_follow_presentation_generation_mode` asserts `expected_tools \| get_canvas_tool_names(generation_mode)` | Take upstream, re-add the import and the `\| get_canvas_tool_names(...)` on that assert. |
+| `servers/fastapi/openai_spec.json` | Regenerated; includes the canvas routes and every tool's input schema | Never hand-merge (one line). The upstream-sync workflow resolves a spec-only conflict and regenerates automatically. By hand: take either side, then regenerate (below). |
 
 ### Regenerating `openai_spec.json`
 
@@ -35,20 +58,20 @@ From `servers/fastapi`, with the same env vars as the test job:
 PYTHONPATH=. uv run --locked python scripts/generate_openapi_spec.py
 ```
 
-`scripts/generate_openapi_spec.py` is upstream's script; it dumps `api.main.app.openapi()`.
-The output is deterministic and doesn't depend on env vars.
-`tests/unit/test_openapi_spec_fresh.py` fails whenever the committed spec is stale.
-Upstream's committed spec can lag behind its own code, so a regenerated spec
-may also include unrelated upstream schema changes. That's expected.
+`scripts/generate_openapi_spec.py` is upstream's script; it dumps
+`api.main.app.openapi()`. The output is deterministic and doesn't depend on env
+vars. Upstream changing a chat tool's schema also changes the spec, and
+`tests/unit/test_openapi_spec_fresh.py` fails until it's regenerated.
 
-## Upstream internals the mod depends on
+## Upstream APIs the mod depends on
 
-`canvas.py` reuses these instead of copying them, so canvas edits match the
-generation path. If upstream renames or changes any of them, `test_canvas_api.py`
-fails:
+If upstream renames or reshapes any of these, `test_canvas_api.py` fails:
 
-- `api.v1.ppt.endpoints.presentation._get_presentation_stream_layout`: schema, validate, create, update, edit, and context tests
-- `api.v1.ppt.endpoints.presentation._template_slide_ui` / `_apply_template_content_to_ui`: create, update, and edit tests assert the fetched image reaches `slide.ui`
-- `api.v1.ppt.endpoints.presentation._presentation_response_data`: context tests
-- `services.chat.memory_layer.PresentationChatMemoryLayer.delete_slide`: delete tests (index shift, `n_slides`, blank fallback slide for Standard and Smart decks)
-- `utils.process_slides.process_slide_and_fetch_assets` / `process_old_and_new_slides_and_fetch_assets` (public, but signature-coupled)
+- `services.chat.tools.ChatTools`: constructor `(memory)`,
+  `get_tool_definitions()` (reads only `memory.presentation_type`),
+  `execute_tool_call(AssistantToolCall)` and its `{"ok", "result" | "error", "repair", "recovery"}` result
+- `services.chat.presentation_context_store.PresentationContextStore(sql_session, presentation_id, presentation_type=...)`
+- `services.chat.prompts.build_system_prompt(presentation_memory_context, chat_memory_context, presentation_type)`
+- `llmai.shared.AssistantToolCall(id, name, arguments)`
+- Tool input schemas must not be recursive (`canvas_tool_registry.inline_json_schema`
+  inlines `$defs`; recursion raises).

@@ -1,7 +1,7 @@
 import pytest
 
 import mcp_server
-from mcp_canvas import MCP_CANVAS_TOOL_NAMES
+from mcp_canvas import MCP_CANVAS_TOOL_NAMES, get_canvas_tool_names
 
 
 def test_canvas_tool_names_are_registered_with_mcp_server():
@@ -21,17 +21,22 @@ def test_canvas_operation_ids_exist_in_openapi_spec():
 @pytest.mark.parametrize(
     ("mode", "present", "absent"),
     [
-        ("standard", {"edit_slide", "create_slide"}, {"edit_slide_html", "update_slide_html"}),
-        ("smart", {"edit_slide_html", "update_slide_html"}, {"`edit_slide`", "create_slide"}),
-        ("both", {"edit_slide", "create_slide", "edit_slide_html"}, set()),
+        ("standard", {"addElement", "saveSlide", "getTemplateSummary"}, {"smartSaveSlide", "getSmartPresentationContext"}),
+        ("smart", {"smartSaveSlide", "getSmartPresentationContext"}, {"addElement", "saveSlide"}),
+        ("both", {"addElement", "saveSlide", "smartSaveSlide"}, set()),
     ],
 )
-def test_canvas_instructions_only_name_tools_enabled_for_mode(mode, present, absent):
+def test_canvas_tools_follow_generation_mode(mode, present, absent):
+    names = get_canvas_tool_names(mode)
+
+    assert {"get_presentation_context", "reorder_slide", "deleteSlide", "searchSlide"} <= names
+    assert present <= names
+    assert not absent & names
+
+
+@pytest.mark.parametrize("mode", ["standard", "smart", "both"])
+def test_canvas_instructions_point_to_context_tool(mode):
     instructions = mcp_server.get_mcp_instructions(mode)
 
-    assert "# Canvas Editing Workflow" in instructions
+    assert "# Editing existing presentations" in instructions
     assert "get_presentation_context" in instructions
-    for tool in present:
-        assert tool in instructions
-    for tool in absent:
-        assert tool not in instructions

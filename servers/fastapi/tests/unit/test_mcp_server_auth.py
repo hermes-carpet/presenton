@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 import mcp_server
+from mcp_canvas import get_canvas_tool_names
 from models.sql.user import User
 
 
@@ -329,16 +330,6 @@ def test_mcp_upload_tools_publish_complete_input_and_output_schemas(monkeypatch)
                 "start_template_generation",
                 "upload_files",
                 "get_job_status",
-                "get_presentation_context",
-                "delete_slide",
-                "reorder_slide",
-                "get_slide_schema",
-                "edit_slide",
-                "update_slide",
-                "validate_json",
-                "create_slide",
-                "edit_slide_html",
-                "update_slide_html",
             },
         ),
         (
@@ -350,14 +341,6 @@ def test_mcp_upload_tools_publish_complete_input_and_output_schemas(monkeypatch)
                 "start_template_generation",
                 "upload_files",
                 "get_job_status",
-                "get_presentation_context",
-                "delete_slide",
-                "reorder_slide",
-                "get_slide_schema",
-                "edit_slide",
-                "update_slide",
-                "validate_json",
-                "create_slide",
             },
         ),
         (
@@ -366,11 +349,6 @@ def test_mcp_upload_tools_publish_complete_input_and_output_schemas(monkeypatch)
                 "start_smart_presentation",
                 "upload_files",
                 "get_job_status",
-                "get_presentation_context",
-                "delete_slide",
-                "reorder_slide",
-                "edit_slide_html",
-                "update_slide_html",
             },
         ),
         (
@@ -383,16 +361,6 @@ def test_mcp_upload_tools_publish_complete_input_and_output_schemas(monkeypatch)
                 "start_template_generation",
                 "upload_files",
                 "get_job_status",
-                "get_presentation_context",
-                "delete_slide",
-                "reorder_slide",
-                "get_slide_schema",
-                "edit_slide",
-                "update_slide",
-                "validate_json",
-                "create_slide",
-                "edit_slide_html",
-                "update_slide_html",
             },
         ),
     ],
@@ -407,4 +375,4 @@ def test_mcp_tools_follow_presentation_generation_mode(
             server = mcp_server.create_mcp_server(client)
             return {tool.name for tool in await server.list_tools()}
 
-    assert asyncio.run(list_tool_names()) == expected_tools
+    assert asyncio.run(list_tool_names()) == expected_tools | get_canvas_tool_names(generation_mode)
