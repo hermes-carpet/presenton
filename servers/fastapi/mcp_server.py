@@ -26,6 +26,7 @@ from services.api_keys import API_KEY_PREFIX, verify_api_key
 from api.v1.auth.config import SESSION_COOKIE_NAME
 from api.v1.auth.users import get_jwt_strategy
 from utils.mcp_public_urls import MCP_REQUEST_HEADER
+from mcp_canvas import MCP_CANVAS_TOOL_NAMES, get_canvas_instructions, get_canvas_route_maps
 
 OPENAPI_SPEC_PATH = Path(__file__).with_name("openai_spec.json")
 MCP_API_BASE_URL = "http://127.0.0.1:8000"
@@ -55,65 +56,6 @@ MCP_STANDARD_ROUTE_MAPS = [
     RouteMap(
         methods=["POST"],
         pattern=r"^/api/v1/ppt/presentation/generate/async$",
-        mcp_type=MCPType.TOOL,
-    ),
-]
-
-MCP_CANVAS_SHARED_ROUTE_MAPS = [
-    RouteMap(
-        methods=["GET"],
-        pattern=r"^/api/v1/ppt/canvas/presentation/\{presentation_id\}/context$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["DELETE"],
-        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["PATCH"],
-        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}/reorder$",
-        mcp_type=MCPType.TOOL,
-    ),
-]
-
-MCP_CANVAS_STANDARD_ROUTE_MAPS = [
-    RouteMap(
-        methods=["GET"],
-        pattern=r"^/api/v1/ppt/template/schema$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["POST"],
-        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}/edit$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["PATCH"],
-        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["POST"],
-        pattern=r"^/api/v1/ppt/canvas/validate-json$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["POST"],
-        pattern=r"^/api/v1/ppt/canvas/slide/create$",
-        mcp_type=MCPType.TOOL,
-    ),
-]
-
-MCP_CANVAS_SMART_ROUTE_MAPS = [
-    RouteMap(
-        methods=["POST"],
-        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}/edit-html$",
-        mcp_type=MCPType.TOOL,
-    ),
-    RouteMap(
-        methods=["PATCH"],
-        pattern=r"^/api/v1/ppt/canvas/slide/\{slide_id\}/html$",
         mcp_type=MCPType.TOOL,
     ),
 ]
@@ -167,17 +109,8 @@ MCP_TOOL_NAMES = {
     "create_template_api_v1_ppt_template_async_post": "start_template_generation",
     "mcp_files_upload": "upload_files",
     "check_async_task_status_api_v1_async_tasks_status__id__get": "get_job_status",
-    "get_canvas_context_api_v1_ppt_canvas_presentation__presentation_id__context_get": "get_presentation_context",
-    "canvas_delete_slide_api_v1_ppt_canvas_slide__slide_id__delete": "delete_slide",
-    "canvas_reorder_slide_api_v1_ppt_canvas_slide__slide_id__reorder_patch": "reorder_slide",
-    "get_template_schema_api_v1_ppt_template_schema_get": "get_slide_schema",
-    "canvas_edit_slide_api_v1_ppt_canvas_slide__slide_id__edit_post": "edit_slide",
-    "canvas_update_slide_api_v1_ppt_canvas_slide__slide_id__patch": "update_slide",
-    "canvas_validate_json_api_v1_ppt_canvas_validate_json_post": "validate_json",
-    "canvas_create_slide_api_v1_ppt_canvas_slide_create_post": "create_slide",
-    "canvas_edit_slide_html_api_v1_ppt_canvas_slide__slide_id__edit_html_post": "edit_slide_html",
-    "canvas_update_slide_html_api_v1_ppt_canvas_slide__slide_id__html_patch": "update_slide_html",
 }
+MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)
 
 def get_mcp_route_maps(
     generation_mode: PresentationGenerationMode,
@@ -187,12 +120,10 @@ def get_mcp_route_maps(
     if generation_mode in {"both", "standard"}:
         route_maps.extend(MCP_STANDARD_ROUTE_MAPS)
         route_maps.extend(MCP_TEMPLATE_ROUTE_MAPS)
-        route_maps.extend(MCP_CANVAS_STANDARD_ROUTE_MAPS)
     if generation_mode in {"both", "smart"}:
         route_maps.extend(MCP_SMART_ROUTE_MAPS)
-        route_maps.extend(MCP_CANVAS_SMART_ROUTE_MAPS)
     route_maps.extend(MCP_SHARED_ROUTE_MAPS)
-    route_maps.extend(MCP_CANVAS_SHARED_ROUTE_MAPS)
+    route_maps.extend(get_canvas_route_maps(generation_mode))
     route_maps.append(RouteMap(mcp_type=MCPType.EXCLUDE))
     return route_maps
 
@@ -342,26 +273,13 @@ unless the user separately asked to create or inspect a Standard/custom template
 5. Do not stop polling solely because generation takes several minutes. First-run model
    downloads and larger decks can legitimately take longer.
 
-# Canvas Editing Workflow
-
-You can edit and extend existing presentations using the canvas tools:
-
-1. **First call:** Call `get_presentation_context` to fetch the generation mode, available layouts, and current slides.
-2. **Editing approaches (Standard Mode):**
-   - **LLM-powered:** Call `edit_slide` with a prompt explaining the changes. The internal LLM will adapt the slide to the layout.
-   - **JSON-direct:** For precise layout usage, call `get_slide_schema` for the desired layout ID, then structure JSON matching that exact schema. Use `validate_json` to verify correctness, and `create_slide` or `update_slide` to apply the JSON.
-3. **Editing approaches (Smart Mode):**
-   - **LLM-powered:** Call `edit_slide_html` with a prompt.
-   - **Direct HTML:** Call `update_slide_html` to save HTML directly without an LLM.
-4. **Deck management:** Use `delete_slide` and `reorder_slide` as needed to manage the deck.
-5. **Completion:** Always share the returned `edit_path` URL with the user so they can view the updated deck.
-
 # Final response
 
 Claim success only after a tool reports completed or an immediate listing/upload call
 returns the required fields. Give the user the relevant exported path, edit path, or
 template preview URL. Keep internal task details brief unless troubleshooting is needed.
 """
+    instructions += get_canvas_instructions(generation_mode)
     return instructions
 
 with OPENAPI_SPEC_PATH.open("r", encoding="utf-8") as f:
