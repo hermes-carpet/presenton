@@ -30,6 +30,7 @@ jobs:
       UPSTREAM_BRANCH: main
       BASE_BRANCH: main
       SYNC_LABEL: upstream-sync
+      SPEC_PATH: servers/fastapi/openai_spec.json
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Same env as test-all.yml's test-fastapi job.
       APP_DATA_DIRECTORY: /tmp/presenton-app-data
@@ -104,23 +105,38 @@ jobs:
         run: |
           conflicts_file="${RUNNER_TEMP}/conflicts.txt"
           : > "$conflicts_file"
+          spec_resolved=false
+
+          # Merge $1; on conflict, record the files and abort. A conflict in
+          # the generated OpenAPI spec alone is resolved by taking either side,
+          # since the next step regenerates it from the merged code.
+          merge_ref() {
+            if git merge --no-ff --no-edit "$@"; then
+              return 0
+            fi
+            conflicts=$(git diff --name-only --diff-filter=U)
+            if [ "$conflicts" = "$SPEC_PATH" ]; then
+              git checkout --theirs -- "$SPEC_PATH"
+              git add "$SPEC_PATH"
+              git commit --no-edit
+              spec_resolved=true
+              return 0
+            fi
+            echo "$conflicts" >> "$conflicts_file"
+            git merge --abort
+            return 1
+          }
 
           # An existing sync branch may lag behind main; bring it up to date first.
           if ! git merge-base --is-ancestor "origin/${BASE_BRANCH}" HEAD; then
-            if ! git merge --no-ff --no-edit "origin/${BASE_BRANCH}"; then
-              git diff --name-only --diff-filter=U >> "$conflicts_file"
-              git merge --abort
-            fi
+            merge_ref "origin/${BASE_BRANCH}" || true
           fi
 
           if [ ! -s "$conflicts_file" ]; then
-            if ! git merge --no-ff --no-edit \
-              -m "Merge upstream ${UPSTREAM_REPO} ${UPSTREAM_BRANCH} (${RANGE})" "$UPSTREAM_SHA"; then
-              git diff --name-only --diff-filter=U >> "$conflicts_file"
-              git merge --abort
-            fi
+            merge_ref -m "Merge upstream ${UPSTREAM_REPO} ${UPSTREAM_BRANCH} (${RANGE})" "$UPSTREAM_SHA" || true
           fi
 
+          echo "spec_resolved=${spec_resolved}" >> "$GITHUB_OUTPUT"
           if [ -s "$conflicts_file" ]; then
             echo "conflict=true" >> "$GITHUB_OUTPUT"
             echo "Conflicting files:"
@@ -141,6 +157,26 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: servers/fastapi/uv.lock
+
+      - name: Regenerate OpenAPI spec
+        id: spec
+        if: steps.merge.outputs.conflict == 'false'
+        working-directory: servers/fastapi
+        run: |
+          # The MCP server builds its tools from this static file, and
+          # tests/unit/test_openapi_spec_fresh.py fails when it is stale.
+          mkdir -p "$APP_DATA_DIRECTORY" "$TEMP_DIRECTORY"
+          uv sync --locked --dev
+          if ! PYTHONPATH=. uv run --locked python scripts/generate_openapi_spec.py; then
+            echo "::warning::Could not regenerate the OpenAPI spec; the tests will show why."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet -- openai_spec.json; then
+            echo "status=unchanged" >> "$GITHUB_OUTPUT"
+          else
+            git add openai_spec.json
+            git commit -m "chore: regenerate openai_spec.json"
+            echo "status=regenerated" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Run FastAPI tests
         id: tests
@@ -189,6 +225,10 @@ jobs:
             echo "Conflicting files:"
             # shellcheck disable=SC2016 # backticks are Markdown, not shell
             sort -u "${RUNNER_TEMP}/conflicts.txt" | sed 's/.*/- `&`/'
+            if grep -qx "$SPEC_PATH" "${RUNNER_TEMP}/conflicts.txt"; then
+              echo
+              echo "Don't hand-merge \`${SPEC_PATH}\`: take either side, then regenerate it (command in MODS.md)."
+            fi
             echo
             echo "Nothing was pushed. Resolve with MODS.md as the checklist."
             echo
@@ -250,8 +290,15 @@ jobs:
           COMPARE_URL: ${{ steps.upstream.outputs.compare_url }}
           COMMIT_COUNT: ${{ steps.upstream.outputs.commit_count }}
           SUMMARY: ${{ steps.tests.outputs.summary }}
+          SPEC_STATUS: ${{ steps.spec.outputs.status }}
+          SPEC_RESOLVED: ${{ steps.merge.outputs.spec_resolved }}
         run: |
           git push origin "HEAD:refs/heads/${BRANCH}"
+
+          spec_note="OpenAPI spec ${SPEC_STATUS}"
+          if [ "$SPEC_RESOLVED" = "true" ]; then
+            spec_note="${spec_note} (upstream conflict in openai_spec.json resolved by regenerating)"
+          fi
 
           body="${RUNNER_TEMP}/pr.md"
           {
@@ -259,6 +306,7 @@ jobs:
             echo
             echo "- Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
             echo "- FastAPI tests: \`${SUMMARY}\`"
+            echo "- ${spec_note}"
             echo "- Run: ${RUN_URL}"
             echo
             echo "Merged with a merge commit; fork commits are kept. Review and merge manually."
