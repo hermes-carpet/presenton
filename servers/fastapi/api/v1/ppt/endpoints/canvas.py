@@ -30,6 +30,7 @@ from api.v1.ppt.endpoints.presentation import (
 )
 from models.presentation_with_slides import PresentationWithSlides
 from api.v1.ppt.endpoints.presentation import _presentation_response_data
+from constants.presentation import MAX_NUMBER_OF_SLIDES
 
 CANVAS_ROUTER = APIRouter(prefix="/canvas", tags=["Canvas"])
 LOGGER = logging.getLogger(__name__)
@@ -78,10 +79,11 @@ async def get_canvas_context(
         slides=slides,
     )
 
-    layout = _get_presentation_stream_layout(presentation)
     layouts = []
-    if layout:
-        layouts = [CanvasContextLayout(id=l.id, name=l.name, description=l.description) for l in layout.slides]
+    if presentation.layout is not None:
+        layout = _get_presentation_stream_layout(presentation)
+        if layout:
+            layouts = [CanvasContextLayout(id=l.id, name=l.name, description=l.description) for l in layout.slides]
 
     return CanvasContextResponse(
         presentation=presentation_with_slides,
@@ -108,6 +110,8 @@ async def canvas_edit_slide(
         request.prompt,
     )
 
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot edit slide: presentation has no layouts.")
     presentation_layout = _get_presentation_stream_layout(presentation)
     if not presentation_layout:
         raise HTTPException(status_code=400, detail="Cannot edit slide: presentation has no layouts.")
@@ -173,6 +177,10 @@ async def canvas_edit_slide(
     slide.ui = _template_slide_ui(presentation.layout, slide.layout)
     slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
     sql_session.add_all(new_assets)
+
+    # Re-hydrate UI after asset fetching mutated the slide's content
+    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
+
     await sql_session.commit()
 
     await MEM0_PRESENTATION_MEMORY_SERVICE.store_slide_edit(
@@ -267,9 +275,11 @@ async def canvas_validate_json(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot validate JSON: presentation has no layouts.")
     presentation_layout = _get_presentation_stream_layout(presentation)
     if not presentation_layout:
-        raise HTTPException(status_code=400, detail="Cannot create slide: presentation has no layouts.")
+        raise HTTPException(status_code=400, detail="Cannot validate JSON: presentation has no layouts.")
     slide_layout = next(
         (l for l in presentation_layout.slides if l.id == request.layout_id), None
     )
@@ -301,6 +311,9 @@ async def canvas_update_slide_html(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    if presentation.generation_mode != "smart":
+        raise HTTPException(status_code=400, detail="HTML update is only supported for Smart decks.")
+
     slide.id = uuid.uuid4()
     sql_session.add(slide)
     slide.html_content = request.html
@@ -331,9 +344,11 @@ async def canvas_create_slide(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot create slide: presentation has no layouts.")
     presentation_layout = _get_presentation_stream_layout(presentation)
     if not presentation_layout:
-        raise HTTPException(status_code=400, detail="Cannot validate JSON: presentation has no layouts.")
+        raise HTTPException(status_code=400, detail="Cannot create slide: presentation has no layouts.")
     slide_layout = next(
         (l for l in presentation_layout.slides if l.id == request.layout_id), None
     )
@@ -347,8 +362,6 @@ async def canvas_create_slide(
         )
 
     image_generation_service = ImageGenerationService(get_images_directory())
-
-    from constants.presentation import MAX_NUMBER_OF_SLIDES
 
     # Figure out the index
     statement = (
@@ -367,7 +380,7 @@ async def canvas_create_slide(
 
     # Shift indices if necessary
     for s in slides:
-        if s.index >= target_index:
+        if getattr(s, 'index', -1) >= target_index:
             s.index += 1
             sql_session.add(s)
 
@@ -404,9 +417,12 @@ async def canvas_create_slide(
             warning.get("detail"),
         )
 
+    # Re-hydrate UI after asset fetching mutated the slide's content
+    new_slide.ui = _apply_template_content_to_ui(new_slide.ui, new_slide.content)
+
     sql_session.add(new_slide)
     sql_session.add_all(assets)
-    presentation.n_slides += 1
+    presentation.n_slides = (presentation.n_slides or 0) + 1
     sql_session.add(presentation)
     await sql_session.commit()
 
@@ -437,6 +453,8 @@ async def canvas_update_slide(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot update slide: presentation has no layouts.")
     presentation_layout = _get_presentation_stream_layout(presentation)
     if not presentation_layout:
         raise HTTPException(status_code=400, detail="Cannot update slide: presentation has no layouts.")
@@ -496,6 +514,10 @@ async def canvas_update_slide(
     slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
 
     sql_session.add_all(new_assets)
+
+    # Re-hydrate UI after asset fetching mutated the slide's content
+    slide.ui = _apply_template_content_to_ui(slide.ui, slide.content)
+
     await sql_session.commit()
 
     return absolute_mcp_result_links(
@@ -533,10 +555,11 @@ async def canvas_delete_slide(
     subsequent_slides = results.scalars().all()
 
     for s in subsequent_slides:
-        s.index -= 1
-        sql_session.add(s)
+        if getattr(s, 'index', -1) != -1:
+            s.index -= 1
+            sql_session.add(s)
 
-    presentation.n_slides -= 1
+    presentation.n_slides = max(0, (presentation.n_slides or 1) - 1)
     sql_session.add(presentation)
     await sql_session.commit()
 
@@ -594,10 +617,10 @@ async def canvas_reorder_slide(
     for s in slides:
         if s.id == slide.id:
             continue
-        if old_index < target_index and old_index <= s.index <= target_index:
+        if old_index < target_index and old_index <= getattr(s, 'index', -1) <= target_index:
             s.index -= 1
             sql_session.add(s)
-        elif target_index <= s.index < old_index:
+        elif target_index <= getattr(s, 'index', -1) < old_index:
             s.index += 1
             sql_session.add(s)
 

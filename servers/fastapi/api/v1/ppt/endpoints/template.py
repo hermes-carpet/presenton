@@ -109,6 +109,8 @@ async def get_template_schema(
     if not presentation:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    if presentation.layout is None:
+        raise HTTPException(status_code=400, detail="Cannot get schema: presentation has no layouts.")
     presentation_layout = _get_presentation_stream_layout(presentation)
     if not presentation_layout:
         raise HTTPException(status_code=400, detail="Cannot get schema: presentation has no layouts.")
