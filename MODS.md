@@ -41,6 +41,15 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 | `servers/fastapi/tests/unit/test_openapi_spec_fresh.py` | Fails CI when `openai_spec.json` doesn't match `app.openapi()`. |
 | `MODS.md` | This file. |
 
+## Fork CI (new files, see PR #2)
+
+| File | Purpose |
+| --- | --- |
+| `.github/workflows/upstream-sync.yml` | Daily merge of upstream `main` into a sync PR. It runs the FastAPI tests and regenerates `openai_spec.json`. Conflicts and test failures become an `upstream-sync` issue. The PR lists upstream workflow changes and changes to the files below. |
+| `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`: native amd64 and arm64 (`ubuntu-24.04-arm`) builds, each smoke-tested and pushed by digest, then one manifest tagged `latest`, `<version>` and `sha-<commit>`. amd64 gates publishing; a failed arm64 publishes the tags amd64-only and warns on the `upstream-sync` issue. |
+| `.github/scripts/docker-smoke-test.sh` | Smoke test through nginx: MCP handshake and canvas tools, canvas API, web UI, PDF/PPTX export, offline OCR, offline mem0 embedding. |
+| `docker-compose.fork.yml` | Runs the published image on a server: no repo checkout, `.env` passthrough, healthcheck. |
+
 ## Upstream files touched
 
 | File | Change | Why | On conflict |
