@@ -4,8 +4,9 @@ FROM python:3.11-slim-trixie AS fastapi-builder
 
 WORKDIR /app/servers/fastapi
 
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+# Fork: no build-time bytecode (~200 MB). Python compiles what it imports on
+# first use (~80 MB, about 5 s once per container) instead of everything.
+ENV UV_LINK_MODE=copy
 
 RUN python -m venv --without-pip /opt/venv \
     && pip install --no-cache-dir uv
@@ -21,6 +22,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python \
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
+# Fork: slim the venv. Wheels ship native libraries with debug symbols
+# (~175 MB), and many packages bundle their test suites.
+RUN apt-get update && apt-get install -y --no-install-recommends binutils \
+    && rm -rf /var/lib/apt/lists/* \
+    && find /opt/venv -type f -name "*.so*" -exec sh -c 'strip --strip-unneeded "$@" 2>/dev/null || true' _ {} + \
+    && find /opt/venv/lib/python3*/site-packages -depth -type d \( -name tests -o -name test \) -exec rm -rf {} +
+
 # The backend project is not installed into the venv. A constant .pth file puts
 # /app/servers/fastapi on sys.path instead (same import order as an installed
 # package), so /opt/venv changes only with uv.lock and code-only updates don't
@@ -31,7 +39,17 @@ COPY servers/fastapi /app/servers/fastapi
 ENV HF_HOME=/root/.cache/huggingface \
     PRESENTON_FASTEMBED_ICON_CACHE_DIR=/root/.cache/presenton/fastembed-icons
 # Warm FastEmbed caches into the image (not a BuildKit cache mount, or HF weights would be missing).
-RUN /opt/venv/bin/python scripts/warm_fastembed_cache.py
+# Fork: PYTHONDONTWRITEBYTECODE keeps /opt/venv byte-identical across code
+# changes, so its image layer is reused.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python scripts/warm_fastembed_cache.py
+
+# Fork: move the large, rarely changing data dirs (icons, icon index) out so the
+# runtime stage copies them as separate layers and a code-only update ships
+# only the code.
+RUN mkdir -p /app/fastapi-data/static /app/fastapi-data/assets \
+    && for d in static assets; do \
+    if [ -d "$d" ]; then rmdir "/app/fastapi-data/$d" && mv "$d" /app/fastapi-data/; fi; \
+    done
 
 
 FROM node:22-bookworm-slim AS nextjs-builder
@@ -46,7 +64,12 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY servers/nextjs /app/servers/nextjs
 RUN npm run build \
-    && rm -rf .next-build/cache
+    && rm -rf .next-build/cache \
+    # Fork: public/ is copied separately in the runtime stage (the standalone
+    # copy is a duplicate subset), and the image is glibc-only.
+    && rm -rf .next-build/standalone/public .next-build/standalone/node_modules/@img/*linuxmusl* \
+    # Fork: node_modules gets its own runtime layer (see the runtime stage).
+    && mv .next-build/standalone/node_modules /app/nextjs-node_modules
 
 
 FROM node:22-bookworm-slim AS assets-builder
@@ -70,6 +93,10 @@ COPY scripts/run-presentation-export.mjs /app/scripts/run-presentation-export.mj
 RUN rm -rf /app/presentation-export \
     && node /app/scripts/sync-presentation-export.cjs --force
 
+# Fork: no source maps, type definitions or sharp's wasm fallback at runtime.
+RUN find /app/presentation-export /app/document-extraction-liteparse -type f \( -name "*.map" -o -name "*.d.ts" \) -delete \
+    && rm -rf /app/presentation-export/node_modules/@img/sharp-wasm32 /app/document-extraction-liteparse/node_modules/@img/sharp-wasm32
+
 # Fork: chrome-headless-shell at exactly the version the export runtime's
 # puppeteer pins. Chrome for Testing publishes Linux x64 only; arm64 images use
 # Debian's chromium-headless-shell instead (see the runtime stage).
@@ -81,7 +108,8 @@ RUN mkdir -p /opt/chrome-headless-shell \
     import { install } from "@puppeteer/browsers"; \
     import { PUPPETEER_REVISIONS } from "puppeteer-core/internal/revisions.js"; \
     await install({ browser: "chrome-headless-shell", buildId: PUPPETEER_REVISIONS["chrome-headless-shell"], cacheDir: "/opt/chrome-headless-shell" });' \
-    && ln -s "$(find /opt/chrome-headless-shell -type f -name chrome-headless-shell)" /opt/chrome-headless-shell/headless-shell; \
+    && ln -s "$(find /opt/chrome-headless-shell -type f -name chrome-headless-shell)" /opt/chrome-headless-shell/headless-shell \
+    && find /opt/chrome-headless-shell -path "*/locales/*" -type f ! -name "en-US.pak" -delete; \
     fi
 
 
@@ -147,6 +175,10 @@ RUN set -eux; \
     ln -s /usr/local/bin/chrome-headless-shell /usr/bin/chromium; \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
+    # Fork: Node ships with debug info (~17 MB).
+    apt-get install -y --no-install-recommends binutils; \
+    strip --strip-unneeded /usr/bin/node; \
+    apt-get purge -y --auto-remove binutils; \
     rm -rf /var/lib/apt/lists/*
 
 # Remove any non-Noto fonts that may have been installed as dependencies.
@@ -178,11 +210,15 @@ RUN test -f /app/presentation-export/runner.mjs \
     && ! ldd "$(readlink -f "$PUPPETEER_EXECUTABLE_PATH")" | grep "not found" \
     && "$PUPPETEER_EXECUTABLE_PATH" --version
 
+COPY --link --from=nextjs-builder /app/nextjs-node_modules /app/servers/nextjs/node_modules
 COPY --link --from=nextjs-builder /app/servers/nextjs/.next-build/standalone/ /app/servers/nextjs/
 COPY --link --from=nextjs-builder /app/servers/nextjs/public /app/servers/nextjs/public
 COPY --link --from=nextjs-builder /app/servers/nextjs/.next-build/static /app/servers/nextjs/.next-build/static
 
-# Backend code changes most often; keep it near the end.
+# Backend code changes most often; keep it near the end, with its large data
+# dirs in their own layers.
+COPY --link --from=fastapi-builder /app/fastapi-data/static /app/servers/fastapi/static
+COPY --link --from=fastapi-builder /app/fastapi-data/assets /app/servers/fastapi/assets
 COPY --link --from=fastapi-builder /app/servers/fastapi /app/servers/fastapi
 
 COPY --link start.js LICENSE NOTICE ./
