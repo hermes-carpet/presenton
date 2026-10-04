@@ -11,9 +11,13 @@
 # ubuntu-24.04-arm runner): if it fails, the tags are published amd64-only,
 # with a warning and an upstream-sync issue comment.
 #
-# Upstream's docker-release.yml is left untouched; it targets
-# ghcr.io/presenton/presenton and never triggers in this fork (it runs on
-# releases and manual dispatch only).
+# A manual run from a branch other than main publishes only its sha-<commit>
+# tag, never the moving tags (latest, <version>, <full version>).
+#
+# Upstream's docker-release.yml is left untouched. It targets
+# ghcr.io/presenton/presenton and runs on GitHub releases and manual dispatch,
+# like sync-releaes-to-r2.yml (releases); disable both, and
+# electron-linux-ubuntu22.yml, in the Actions tab (see MODS.md).
 name: Fork Docker image
 
 on:
@@ -51,6 +55,7 @@ jobs:
       image: ${{ steps.meta.outputs.image }}
       version: ${{ steps.meta.outputs.version }}
       full_version: ${{ steps.meta.outputs.full_version }}
+      moving_tags: ${{ steps.meta.outputs.moving_tags }}
       short_sha: ${{ steps.meta.outputs.short_sha }}
     steps:
       - name: Checkout tested commit
@@ -71,13 +76,23 @@ jobs:
             echo "::error::Unexpected package.json version: ${full_version}"
             exit 1
           fi
+          # Moving tags only for main: the post-test trigger, or a manual run on main.
+          moving_tags=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ] || [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            moving_tags=true
+          fi
           {
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "moving_tags=${moving_tags}"
             echo "version=${version}"
             echo "full_version=${full_version}"
             echo "short_sha=${SOURCE_SHA:0:7}"
           } >> "$GITHUB_OUTPUT"
-          echo "Tags: latest, ${version}, ${full_version}, sha-${SOURCE_SHA:0:7}"
+          if [ "$moving_tags" = "true" ]; then
+            echo "Tags: latest, ${version}, ${full_version}, sha-${SOURCE_SHA:0:7}"
+          else
+            echo "Manual run on ${GITHUB_REF}: only sha-${SOURCE_SHA:0:7} will be published."
+          fi
 
   build:
     name: Build and smoke-test (${{ matrix.arch }})
@@ -220,6 +235,7 @@ jobs:
       IMAGE: ${{ needs.meta.outputs.image }}
       VERSION: ${{ needs.meta.outputs.version }}
       FULL_VERSION: ${{ needs.meta.outputs.full_version }}
+      MOVING_TAGS: ${{ needs.meta.outputs.moving_tags }}
       SHORT_SHA: ${{ needs.meta.outputs.short_sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -273,18 +289,24 @@ jobs:
         env:
           REFS: ${{ steps.platforms.outputs.refs }}
         run: |
+          tags=(-t "${IMAGE}:sha-${SHORT_SHA}")
+          if [ "$MOVING_TAGS" = "true" ]; then
+            tags+=(-t "${IMAGE}:latest" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${FULL_VERSION}")
+          fi
           # shellcheck disable=SC2086 # REFS is a space-separated list
-          docker buildx imagetools create \
-            -t "${IMAGE}:latest" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${FULL_VERSION}" \
-            -t "${IMAGE}:sha-${SHORT_SHA}" \
-            $REFS
+          docker buildx imagetools create "${tags[@]}" $REFS
           docker buildx imagetools inspect "${IMAGE}:sha-${SHORT_SHA}"
 
       - name: Report missing arm64
         if: steps.platforms.outputs.arm64_ok == 'false'
         run: |
           step=$(cat "${RUNNER_TEMP}/failures/arm64" 2>/dev/null || echo "unknown (job cancelled or timed out)")
-          message="arm64 image failed at step '${step}'; published latest, ${VERSION}, ${FULL_VERSION} and sha-${SHORT_SHA} as amd64-only."
+          if [ "$MOVING_TAGS" = "true" ]; then
+            published="latest, ${VERSION}, ${FULL_VERSION} and sha-${SHORT_SHA}"
+          else
+            published="sha-${SHORT_SHA}"
+          fi
+          message="arm64 image failed at step '${step}'; published ${published} as amd64-only."
           echo "::warning::${message}"
           {
             echo "### arm64 not published"
