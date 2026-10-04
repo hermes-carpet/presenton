@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 
 import httpx
@@ -295,6 +296,42 @@ def test_rejected_tool_action_returns_422_and_changes_nothing():
     assert "No slide found" in detail["result"]["message"]
     assert [slide.id for slide in stored] == [slides[0].id, slides[1].id]
     assert stored_presentation.n_slides == 2
+
+
+def _layered_deck():
+    presentation, slides = _standard_deck(1)
+    slides[0].ui = copy.deepcopy(TEMPLATE_LAYOUT["layouts"][0])
+    return presentation, slides
+
+
+LAYER_ARGS = {"index": 0, "action": "bring-to-front", "componentIds": None,
+              "position": None, "size": None, "component": None}
+
+
+def test_idempotent_layer_move_is_not_a_rejection():
+    presentation, slides = _layered_deck()
+
+    async def scenario(deck):
+        return await _call_tool(deck, presentation, "updateComponent", {**LAYER_ARGS, "componentId": "main"})
+
+    response = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["updated"] is False
+    assert "already at that layer" in result["message"]
+
+
+def test_missing_component_is_still_a_rejection():
+    presentation, slides = _layered_deck()
+
+    async def scenario(deck):
+        return await _call_tool(deck, presentation, "updateComponent", {**LAYER_ARGS, "componentId": "missing"})
+
+    response = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 422
+    assert "was not found" in response.json()["detail"]["result"]["message"]
 
 
 def test_add_new_slide_layout_keeps_n_slides_in_sync():
