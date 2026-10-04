@@ -47,8 +47,8 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 
 | File | Purpose |
 | --- | --- |
-| `.github/workflows/upstream-sync.yml` | Daily merge of upstream `main` into a sync PR. It runs the FastAPI tests and regenerates `openai_spec.json`. Conflicts and test failures become an `upstream-sync` issue. The PR lists upstream workflow changes and changes to the files below. |
-| `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`: native amd64 and arm64 (`ubuntu-24.04-arm`) builds, each smoke-tested and pushed by digest, then one manifest tagged `latest`, `<version>` and `sha-<commit>`. amd64 gates publishing; a failed arm64 publishes the tags amd64-only and warns on the `upstream-sync` issue. |
+| `.github/workflows/upstream-sync.yml` | Daily merge of upstream `main` into a sync PR, in two jobs: a read-only `merge` job that merges, regenerates `openai_spec.json` and runs the FastAPI tests; and a `publish` job, the only one holding `UPSTREAM_SYNC_TOKEN` (environment secret), which never runs merged code and pushes, opens PRs or files `upstream-sync` issues. The PR lists upstream workflow changes, changes to watched files, and upstream's Dockerfile diff to port into `Dockerfile.fork`. |
+| `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`, builds `Dockerfile.fork` natively on amd64 and arm64 (`ubuntu-24.04-arm`). Each architecture is smoke-tested and pushed by digest; the job then checks that the pushed manifest has exactly the tested image's layers. It publishes one manifest tagged `latest`, `<version>`, `<full version>` and `sha-<commit>`. Tags are gated on amd64; a failed arm64 publishes them amd64-only and warns on the `upstream-sync` issue. |
 | `.github/scripts/docker-smoke-test.sh` | Smoke test through nginx: MCP handshake and canvas tools, canvas API, web UI, PDF/PPTX export, offline OCR, offline mem0 embedding. |
 | `docker-compose.fork.yml` | Runs the published image on a server: no repo checkout, `.env` passthrough, healthcheck. |
 
