@@ -54,7 +54,7 @@ FROM node:22-bookworm-slim AS assets-builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json /app/
@@ -70,12 +70,27 @@ COPY scripts/run-presentation-export.mjs /app/scripts/run-presentation-export.mj
 RUN rm -rf /app/presentation-export \
     && node /app/scripts/sync-presentation-export.cjs --force
 
+# Fork: chrome-headless-shell at exactly the version the export runtime's
+# puppeteer pins. Chrome for Testing publishes Linux x64 only; arm64 images use
+# Debian's chromium-headless-shell instead (see the runtime stage).
+ARG TARGETARCH
+RUN mkdir -p /opt/chrome-headless-shell \
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+    cd /app/presentation-export \
+    && node --input-type=module -e ' \
+    import { install } from "@puppeteer/browsers"; \
+    import { PUPPETEER_REVISIONS } from "puppeteer-core/internal/revisions.js"; \
+    await install({ browser: "chrome-headless-shell", buildId: PUPPETEER_REVISIONS["chrome-headless-shell"], cacheDir: "/opt/chrome-headless-shell" });' \
+    && ln -s "$(find /opt/chrome-headless-shell -type f -name chrome-headless-shell)" /opt/chrome-headless-shell/headless-shell; \
+    fi
+
 
 FROM python:3.11-slim-trixie AS runtime
 
 WORKDIR /app
 
 ARG INSTALL_TESSERACT=true
+ARG TARGETARCH
 ARG CHROMIUM_VERSION=149.0.7827.196-1~deb13u1
 ARG CHROMIUM_SNAPSHOT=20260625T180000Z
 
@@ -89,27 +104,47 @@ ENV APP_DATA_DIRECTORY=/app_data \
     PATH="/opt/venv/bin:${PATH}" \
     NODE_ENV=production \
     START_OLLAMA=false \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell
 
 RUN set -eux; \
     printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot; \
     printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$CHROMIUM_SNAPSHOT" > /etc/apt/sources.list.d/chromium-snapshot.list; \
+    # Fork: headless-only Chrome for exports (PDF/PPTX, template previews) and no
+    # desktop/GUI stack. Fonts: Latin and symbols plus emoji as fallbacks; slides
+    # use their own web fonts.
     packages="ca-certificates curl nginx fontconfig imagemagick zstd \
-    fonts-liberation fonts-noto-core fonts-noto-extra fonts-noto-mono fonts-noto-ui-core fonts-noto-ui-extra \
-    fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji xdg-utils \
-    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
-    libcairo2 libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 \
-    libglib2.0-0t64 libgtk-3-0t64 libnspr4 libnss3 libpango-1.0-0 \
-    libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
-    libxkbcommon0 libxrandr2 libxshmfence1 libxss1 libxtst6"; \
+    fonts-noto-core fonts-noto-color-emoji"; \
     if [ "$INSTALL_TESSERACT" = "true" ]; then packages="$packages tesseract-ocr tesseract-ocr-eng"; fi; \
     apt-get update; \
-    apt-get install -y --no-install-recommends --allow-downgrades \
-    $packages \
-    chromium="${CHROMIUM_VERSION}" \
-    chromium-common="${CHROMIUM_VERSION}" \
-    chromium-driver="${CHROMIUM_VERSION}"; \
-    apt-mark hold chromium chromium-common chromium-driver; \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+    # Libraries chrome-headless-shell links (from ldd).
+    apt-get install -y --no-install-recommends $packages \
+    libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libdbus-1-3 \
+    libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 \
+    libdrm2 libwayland-server0; \
+    # libgbm1 hard-depends on mesa's Gallium/LLVM stack (~190 MB), which headless
+    # rendering never loads (libgbm.so.1 links only libdrm/libexpat; GPU backends
+    # are dlopened). Install it repackaged without that dependency, or fall back
+    # to the stock package.
+    if (cd /tmp && apt-get download libgbm1 && dpkg-deb -R libgbm1_*.deb gbm \
+    && sed -i -E 's/, mesa-libgallium \([^)]*\)//; s/^(Version: .*)/\1+fork1/' gbm/DEBIAN/control \
+    && dpkg-deb --build gbm gbm.deb && dpkg -i gbm.deb); then \
+    apt-mark hold libgbm1; \
+    else \
+    echo "warning: installing stock libgbm1 (pulls mesa)"; \
+    apt-get install -y --no-install-recommends libgbm1; \
+    fi; \
+    rm -rf /tmp/gbm /tmp/gbm.deb /tmp/libgbm1_*.deb; \
+    ln -s /opt/chrome-headless-shell/headless-shell /usr/local/bin/chrome-headless-shell; \
+    else \
+    apt-get install -y --no-install-recommends --allow-downgrades $packages \
+    chromium-headless-shell="${CHROMIUM_VERSION}" \
+    chromium-common="${CHROMIUM_VERSION}"; \
+    apt-mark hold chromium-headless-shell chromium-common; \
+    ln -s /usr/lib/chromium/chromium-headless-shell /usr/local/bin/chrome-headless-shell; \
+    fi; \
+    # Upstream's docker-compose.yml sets PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium.
+    ln -s /usr/local/bin/chrome-headless-shell /usr/bin/chromium; \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
     rm -rf /var/lib/apt/lists/*
@@ -136,8 +171,12 @@ COPY --link --from=assets-builder /app/document-extraction-liteparse /app/docume
 COPY --link --from=assets-builder /app/presentation-export /app/presentation-export
 COPY --link --from=assets-builder /app/scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
 
+COPY --link --from=assets-builder /opt/chrome-headless-shell /opt/chrome-headless-shell
+
 RUN test -f /app/presentation-export/runner.mjs \
-    && test -f /app/presentation-export/node_modules/@presenton/export-core/dist/index.js
+    && test -f /app/presentation-export/node_modules/@presenton/export-core/dist/index.js \
+    && ! ldd "$(readlink -f "$PUPPETEER_EXECUTABLE_PATH")" | grep "not found" \
+    && "$PUPPETEER_EXECUTABLE_PATH" --version
 
 COPY --link --from=nextjs-builder /app/servers/nextjs/.next-build/standalone/ /app/servers/nextjs/
 COPY --link --from=nextjs-builder /app/servers/nextjs/public /app/servers/nextjs/public
