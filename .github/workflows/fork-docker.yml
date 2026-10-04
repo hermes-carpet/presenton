@@ -11,8 +11,9 @@
 # ubuntu-24.04-arm runner): if it fails, the tags are published amd64-only,
 # with a warning and an upstream-sync issue comment.
 #
-# A manual run from a branch other than main publishes only its sha-<commit>
-# tag, never the moving tags (latest, <version>, <full version>).
+# Only a build of main's current head moves latest, <version> and
+# <full version>; manual runs on other branches, and re-runs of older main
+# test runs, publish only sha-<commit>.
 #
 # Upstream's docker-release.yml is left untouched. It targets
 # ghcr.io/presenton/presenton and runs on GitHub releases and manual dispatch,
@@ -76,10 +77,17 @@ jobs:
             echo "::error::Unexpected package.json version: ${full_version}"
             exit 1
           fi
-          # Moving tags only for main: the post-test trigger, or a manual run on main.
+          # Moving tags only for main (the post-test trigger, or a manual run on
+          # main), and only for main's current head: re-running an older test
+          # run must not move latest backwards.
           moving_tags=false
           if [ "$GITHUB_EVENT_NAME" = "workflow_run" ] || [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            moving_tags=true
+            main_head=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)
+            if [ "$SOURCE_SHA" = "$main_head" ]; then
+              moving_tags=true
+            else
+              echo "::notice::${SOURCE_SHA} is not main's current head (${main_head}); publishing only sha-${SOURCE_SHA:0:7}."
+            fi
           fi
           {
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -91,7 +99,7 @@ jobs:
           if [ "$moving_tags" = "true" ]; then
             echo "Tags: latest, ${version}, ${full_version}, sha-${SOURCE_SHA:0:7}"
           else
-            echo "Manual run on ${GITHUB_REF}: only sha-${SOURCE_SHA:0:7} will be published."
+            echo "Only sha-${SOURCE_SHA:0:7} will be published."
           fi
 
   build:
