@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start a Presenton image and check, through nginx (the way a remote MCP client
 # reaches it): the MCP handshake and canvas tools, the canvas API, the web UI,
-# PDF/PPTX export with the bundled headless browser, and offline OCR. The MCP URL is
+# PDF/PPTX export with the bundled headless browser, offline OCR, and the
+# offline mem0 embedding model. The MCP URL is
 # /mcp without a trailing slash (/mcp/ redirects to an internal address).
 # Usage: docker-smoke-test.sh <image> [host-port]
 set -euo pipefail
@@ -130,11 +131,24 @@ ocr=$(docker run --rm --network none --entrypoint sh "$image" -c '
     -annotate +30+120 "Quarterly OCR test 2026" /tmp/ocr.png
   cd /app/servers/fastapi && python -c "
 from services.liteparse_service import LiteParseService
-print(LiteParseService().parse_to_markdown(\"/tmp/ocr.png\"))"' 2>&1 | tail -n 5)
+print(LiteParseService().parse_to_markdown(\"/tmp/ocr.png\"))"' 2>&1 | tail -n 5 || true)
 if ! grep -q "Quarterly OCR test 2026" <<<"$ocr"; then
   echo "Offline OCR failed: ${ocr}"
   exit 1
 fi
 echo "Offline OCR OK."
+
+# mem0: its default embedding model must be baked into the image.
+embedding=$(docker run --rm --network none --entrypoint sh "$image" -c '
+  cd /app/servers/fastapi && python -c "
+from mem0.configs.embeddings.base import BaseEmbedderConfig
+from mem0.embeddings.fastembed import FastEmbedEmbedding
+model = FastEmbedEmbedding(BaseEmbedderConfig(model=\"BAAI/bge-small-en-v1.5\", embedding_dims=384))
+print(\"dims\", len(model.embed(\"quarterly results\")))"' 2>&1 | tail -n 5 || true)
+if ! grep -q "dims 384" <<<"$embedding"; then
+  echo "Offline mem0 embedding failed: ${embedding}"
+  exit 1
+fi
+echo "Offline mem0 embedding OK."
 
 echo "Smoke test passed."
