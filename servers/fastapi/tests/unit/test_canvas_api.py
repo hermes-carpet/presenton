@@ -322,11 +322,12 @@ def test_idempotent_layer_move_is_not_a_rejection():
     assert "already at that layer" in result["message"]
 
 
-def test_missing_component_is_still_a_rejection():
+@pytest.mark.parametrize("component_id", ["missing", "already-title", "is already at that layer."])
+def test_missing_component_is_still_a_rejection(component_id):
     presentation, slides = _layered_deck()
 
     async def scenario(deck):
-        return await _call_tool(deck, presentation, "updateComponent", {**LAYER_ARGS, "componentId": "missing"})
+        return await _call_tool(deck, presentation, "updateComponent", {**LAYER_ARGS, "componentId": component_id})
 
     response = _run([presentation, *slides], scenario)
 

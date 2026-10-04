@@ -7,7 +7,6 @@ the same tools Presenton's internal LLM uses. See MODS.md.
 
 import json
 import logging
-import re
 import uuid
 from typing import Optional
 
@@ -51,11 +50,13 @@ you have over MCP. Differences for MCP clients:
 
 # The assistant's tools report some rejections inside a successful result
 # (e.g. {"deleted": False, "message": "No slide found ..."}) rather than by
-# raising; treat those as failures too. Idempotent no-ops that report the
-# requested state as already reached (e.g. "Component 'x' is already at that
-# layer.") stay successes.
+# raising; treat those as failures too. The one idempotent no-op stays a
+# success: updateComponent's layer move on a component already at that layer
+# ({"updated": False, "action": ..., "message": "Component 'x' is already at
+# that layer."}). It is matched on its fixed message suffix plus the "action"
+# key, never on caller-supplied text inside the message.
 REJECTION_KEYS = ("added", "deleted", "saved", "updated")
-ALREADY_DONE = re.compile(r"\balready\b", re.IGNORECASE)
+LAYER_NO_OP_SUFFIX = "is already at that layer."
 
 
 def _is_rejection(result: object) -> bool:
@@ -63,7 +64,8 @@ def _is_rejection(result: object) -> bool:
         return False
     if not any(result.get(key) is False for key in REJECTION_KEYS):
         return False
-    return not ALREADY_DONE.search(str(result.get("message") or ""))
+    layer_no_op = "action" in result and str(result.get("message") or "").endswith(LAYER_NO_OP_SUFFIX)
+    return not layer_no_op
 
 
 def _deck_type(presentation: PresentationModel) -> DeckType:
