@@ -31,6 +31,17 @@ jobs:
       BASE_BRANCH: main
       SYNC_LABEL: upstream-sync
       SPEC_PATH: servers/fastapi/openai_spec.json
+      # Upstream files the fork modifies or builds on (see MODS.md). Changes to
+      # them are listed in the sync PR for review even when they merge cleanly.
+      WATCHED_PATHS: >-
+        Dockerfile docker-compose.yml nginx.conf start.js
+        scripts/sync-presentation-export.cjs scripts/run-presentation-export.mjs
+        servers/fastapi/services/export_task_service.py
+        servers/fastapi/services/chat/tools.py servers/fastapi/services/chat/schemas.py
+        servers/fastapi/services/chat/prompts.py servers/fastapi/services/chat/memory_layer.py
+        servers/fastapi/services/chat/presentation_context_store.py
+        servers/fastapi/mcp_server.py servers/fastapi/api/v1/ppt/router.py
+        servers/fastapi/tests/unit/test_mcp_server_auth.py
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Same env as test-all.yml's test-fastapi job.
       APP_DATA_DIRECTORY: /tmp/presenton-app-data
@@ -300,6 +311,8 @@ jobs:
 
           # Upstream workflow changes take effect in this fork once merged.
           workflow_changes=$(git diff --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github/workflows || true)
+          # shellcheck disable=SC2086 # WATCHED_PATHS is a space-separated list
+          watched_changes=$(git diff --stat=100 "$BASE_SHA" "$UPSTREAM_SHA" -- $WATCHED_PATHS | sed '$d' || true)
 
           spec_note="OpenAPI spec ${SPEC_STATUS}"
           if [ "$SPEC_RESOLVED" = "true" ]; then
@@ -316,6 +329,16 @@ jobs:
             echo "- Run: ${RUN_URL}"
             echo
             echo "Merged with a merge commit; fork commits are kept. Review and merge manually."
+            if [ -n "$watched_changes" ]; then
+              echo
+              echo "### Upstream changes to files the fork modifies or builds on"
+              echo
+              echo "These merged cleanly, but check them against MODS.md (e.g. new Dockerfile packages, export-runtime or chat-tool changes)."
+              echo
+              echo '```'
+              echo "$watched_changes"
+              echo '```'
+            fi
             if [ -n "$workflow_changes" ]; then
               echo
               echo "### Upstream workflow changes (review before merging)"

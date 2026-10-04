@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Start a Presenton image and check that the app and the canvas MCP tools are
-# served through nginx, the way a remote MCP client reaches them. The MCP URL is
+# Start a Presenton image and check, through nginx (the way a remote MCP client
+# reaches it): the MCP handshake and canvas tools, the canvas API, the web UI,
+# and PDF/PPTX export with the bundled headless browser. The MCP URL is
 # /mcp without a trailing slash (/mcp/ redirects to an internal address).
 # Usage: docker-smoke-test.sh <image> [host-port]
 set -euo pipefail
@@ -79,4 +80,46 @@ expect_status() {
 missing="00000000-0000-0000-0000-000000000000"
 expect_status 404 "/api/v1/ppt/canvas/presentation/${missing}/context"
 expect_status 200 "/"
+# Export: seed a Smart deck, save a slide through the canvas tool, then export.
+deck=$(docker exec -i -w / "$name" python - <<'PY'
+import asyncio
+from models.sql.presentation import PresentationModel, PresentationVersion
+from models.sql.slide import SlideModel
+from services.database import async_session_maker
+
+async def main():
+    deck = PresentationModel(version=PresentationVersion.V2_STANDARD, content="smoke",
+                             n_slides=1, language="English",
+                             title="Smoke", layout=None, generation_mode="smart")
+    slide = SlideModel(presentation=deck.id, layout_group="smart-html", layout="smart-html",
+                       index=0, content={}, html_content="<section></section>")
+    async with async_session_maker() as session:
+        session.add_all([deck, slide])
+        await session.commit()
+    print(deck.id)
+
+asyncio.run(main())
+PY
+)
+deck=$(tail -n 1 <<<"$deck")
+html='<section data-slide-type=\"content\" data-slide-title=\"Smoke\" class=\"relative h-[720px] w-[1280px] overflow-hidden bg-white p-16\"><h2 class=\"text-5xl\">Smoke test ✓</h2></section>'
+code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  "${base}/api/v1/ppt/canvas/presentation/${deck}/tools/smartSaveSlide" \
+  -H "content-type: application/json" \
+  -d "{\"html\":\"${html}\",\"index\":0,\"replaceOldSlideAtIndex\":true,\"speakerNote\":null,\"editPrompt\":null}")
+if [ "$code" != "200" ]; then
+  echo "smartSaveSlide returned ${code}"
+  exit 1
+fi
+for format in pdf pptx; do
+  response=$(curl -sS -X POST "${base}/api/v1/ppt/presentation/${deck}/export" \
+    -H "content-type: application/json" -d "{\"export_as\":\"${format}\"}")
+  path=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("path", ""))' <<<"$response" 2>/dev/null || true)
+  if [ -z "$path" ] || ! docker exec "$name" test -s "$path"; then
+    echo "${format} export failed: ${response}"
+    exit 1
+  fi
+  echo "${format} export OK."
+done
+
 echo "Smoke test passed."
