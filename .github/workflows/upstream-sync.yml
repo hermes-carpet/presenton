@@ -12,7 +12,8 @@
 # A push made with the PAT runs the workflows of the pushed branch, so if
 # upstream changed anything under .github/, nothing is pushed until you have
 # reviewed it: the issue lists the changes, and you approve them by running
-# this workflow manually with reviewed_upstream_sha set to that upstream commit.
+# this workflow manually with reviewed_upstream_sha set to that upstream
+# commit's full SHA.
 #
 # UPSTREAM_SYNC_TOKEN: a fine-grained PAT for this repo with Contents,
 # Workflows, Pull requests and Issues read/write (GITHUB_TOKEN can't push
@@ -26,8 +27,9 @@ on:
     inputs:
       reviewed_upstream_sha:
         description: >-
-          Upstream commit whose .github/ changes you have reviewed (from the
-          upstream-sync issue). Required to push a merge that changes them.
+          Full 40-character upstream commit SHA whose .github/ changes you have
+          reviewed (from the upstream-sync issue). Required to push a merge that
+          changes them.
         required: false
         default: ""
   schedule:
@@ -221,8 +223,10 @@ jobs:
               echo "Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
               echo
               echo "Conflicting files:"
-              # shellcheck disable=SC2016 # backticks are Markdown, not shell
-              sort -u "${RUNNER_TEMP}/conflicts.txt" | sed 's/.*/- `&`/'
+              echo
+              echo '```'
+              sort -u "${RUNNER_TEMP}/conflicts.txt" | tr -d '`'
+              echo '```'
               if grep -qx "$SPEC_PATH" "${RUNNER_TEMP}/conflicts.txt"; then
                 echo
                 echo "Don't hand-merge \`${SPEC_PATH}\`: take either side, then regenerate it (command in MODS.md)."
@@ -236,12 +240,17 @@ jobs:
           # Upstream changes under .github/ (workflows, actions) would run with
           # this repo's secrets as soon as the merge is pushed, so they need a
           # human review first.
-          github_changes=$(git diff --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github || true)
+          github_changes=$(git diff --no-renames --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github || true)
           blocked=false
           if [ -n "$github_changes" ]; then
-            if [ ${#REVIEWED_SHA} -ge 7 ] && [ "${UPSTREAM_SHA#"$REVIEWED_SHA"}" != "$UPSTREAM_SHA" ]; then
-              echo "Upstream .github/ changes were reviewed up to ${UPSTREAM_SHA}; proceeding."
+            # Exact full SHA only: a short prefix could be matched by a later,
+            # crafted upstream commit.
+            if [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$REVIEWED_SHA" = "$UPSTREAM_SHA" ]; then
+              echo "Upstream .github/ changes were reviewed at ${UPSTREAM_SHA}; proceeding."
             else
+              if [ -n "$REVIEWED_SHA" ]; then
+                echo "::warning::reviewed_upstream_sha must be the full SHA of the current upstream commit (${UPSTREAM_SHA}); not proceeding."
+              fi
               blocked=true
             fi
           fi
@@ -252,19 +261,28 @@ jobs:
               echo
               echo "Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
               echo
-              echo "Changed files:"
+              echo "Changed files (status, path, triggers):"
+              echo
+              echo '```'
               while read -r status file; do
                 triggers=$(git show "${UPSTREAM_SHA}:${file}" 2>/dev/null \
                   | sed -n '/^on:/,/^[a-z]/p' | grep -oE '^  [a-z_]+' | tr -d ' ' | paste -sd, - || true)
-                echo "- \`${status}\` \`${file}\`${triggers:+ (triggers: ${triggers})}"
+                echo "${status} ${file}${triggers:+ (triggers: ${triggers})}" | tr -d '`'
               done <<< "$github_changes"
+              echo '```'
               echo
-              echo "After reviewing them (compare link above), run the **Upstream sync** workflow manually with \`reviewed_upstream_sha\` = \`${UPSTREAM_SHA}\`. Disable any new workflow that doesn't apply to this fork in the Actions tab after merging."
+              echo "After reviewing them (compare link above), run the **Upstream sync** workflow manually with \`reviewed_upstream_sha\` set to this full SHA:"
+              echo
+              echo '```'
+              echo "$UPSTREAM_SHA"
+              echo '```'
+              echo
+              echo "Disable any new workflow that doesn't apply to this fork in the Actions tab after merging."
             } > "${out}/github-changes.md"
           fi
 
           # Reports for the PR body (git only; no upstream code has run yet).
-          workflow_changes=$(git diff --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github/workflows || true)
+          workflow_changes=$(git diff --no-renames --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github/workflows || true)
           # shellcheck disable=SC2086 # WATCHED_PATHS is a space-separated list
           watched_changes=$(git diff --stat=100 "$BASE_SHA" "$UPSTREAM_SHA" -- $WATCHED_PATHS | sed '$d' || true)
           dockerfile_diff=$(git diff "$BASE_SHA" "$UPSTREAM_SHA" -- Dockerfile || true)
@@ -297,11 +315,13 @@ jobs:
               echo
               echo "These run in this fork once merged. Disable any that don't apply in the Actions tab after merging."
               echo
+              echo '```'
               while read -r status file; do
                 triggers=$(git show "${UPSTREAM_SHA}:${file}" 2>/dev/null \
                   | sed -n '/^on:/,/^[a-z]/p' | grep -oE '^  [a-z_]+' | tr -d ' ' | paste -sd, - || true)
-                echo "- \`${status}\` \`${file}\`${triggers:+ (triggers: ${triggers})}"
+                echo "${status} ${file}${triggers:+ (triggers: ${triggers})}" | tr -d '`'
               done <<< "$workflow_changes"
+              echo '```'
             fi
           } > "${out}/review.md"
 
@@ -437,15 +457,20 @@ jobs:
             kind=$1; title=$2; body=$3
             marker="<!-- upstream-sync:${kind}:${UPSTREAM_SHA} -->"
             printf '\n%s\n' "$marker" >> "$body"
-            issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
-              --json number --jq '.[0].number // empty')
-            if [ -z "$issue" ]; then
-              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$SYNC_LABEL" --body-file "$body"
-            elif gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --comments --json body,comments \
-              --jq '[.body] + [.comments[].body] | join("\n")' | grep -qF "$marker"; then
-              echo "Already reported on issue #${issue}."
+            issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
+              --limit 100 --json number --jq '.[].number')
+            for issue in $issues; do
+              if gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --comments --json body,comments \
+                --jq '[.body] + [.comments[].body] | join("\n")' | grep -qF "$marker"; then
+                echo "Already reported on issue #${issue}."
+                return 0
+              fi
+            done
+            first=$(head -n 1 <<<"$issues")
+            if [ -n "$first" ]; then
+              gh issue comment "$first" --repo "$GITHUB_REPOSITORY" --body-file "$body"
             else
-              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$SYNC_LABEL" --body-file "$body"
             fi
           }
           SH
