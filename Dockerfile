@@ -4,8 +4,6 @@ FROM python:3.11-slim-trixie AS fastapi-builder
 
 WORKDIR /app/servers/fastapi
 
-# Fork: no build-time bytecode (~200 MB). Python compiles what it imports on
-# first use (~80 MB, about 5 s once per container) instead of everything.
 ENV UV_LINK_MODE=copy
 
 RUN python -m venv --without-pip /opt/venv \
@@ -29,6 +27,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends binutils \
     && find /opt/venv -type f -name "*.so*" -exec sh -c 'strip --strip-unneeded "$@" 2>/dev/null || true' _ {} + \
     && find /opt/venv/lib/python3*/site-packages -depth -type d \( -name tests -o -name test \) -exec rm -rf {} +
 
+# Fork: compile the venv's bytecode here, before the code copy, so it only
+# changes with uv.lock and containers don't write it at runtime. Hash-based
+# pycs are byte-identical across rebuilds; "unchecked" skips revalidation, as
+# the venv is immutable. (A few vendored files with legacy syntax don't
+# compile; that is harmless.)
+RUN /opt/venv/bin/python -m compileall -q -j 0 --invalidation-mode unchecked-hash /opt/venv/lib >/dev/null || true
+
 # The backend project is not installed into the venv. A constant .pth file puts
 # /app/servers/fastapi on sys.path instead (same import order as an installed
 # package), so /opt/venv changes only with uv.lock and code-only updates don't
@@ -41,7 +46,10 @@ ENV HF_HOME=/root/.cache/huggingface \
 # Warm FastEmbed caches into the image (not a BuildKit cache mount, or HF weights would be missing).
 # Fork: PYTHONDONTWRITEBYTECODE keeps /opt/venv byte-identical across code
 # changes, so its image layer is reused.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python scripts/warm_fastembed_cache.py
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python scripts/warm_fastembed_cache.py \
+    # Fork: drop huggingface_hub's timestamped download logs (the only files it
+    # leaves under HF_HOME), so the copied cache dir is identical across builds.
+    && rm -rf /root/.cache/huggingface/xet/logs
 
 # Fork: move the large, rarely changing data dirs (icons, icon index) out so the
 # runtime stage copies them as separate layers and a code-only update ships
@@ -50,6 +58,10 @@ RUN mkdir -p /app/fastapi-data/static /app/fastapi-data/assets \
     && for d in static assets; do \
     if [ -d "$d" ]; then rmdir "/app/fastapi-data/$d" && mv "$d" /app/fastapi-data/; fi; \
     done
+
+# Fork: compile the backend too ("checked" hash pycs, so a mounted override of
+# a source file is never shadowed by stale bytecode).
+RUN /opt/venv/bin/python -m compileall -q -j 0 --invalidation-mode checked-hash /app/servers/fastapi >/dev/null || true
 
 
 FROM node:22-bookworm-slim AS nextjs-builder
@@ -211,10 +223,26 @@ RUN set -eux; \
     apt-get purge -y --auto-remove binutils; \
     rm -rf /var/lib/apt/lists/*
 
+# Fork: the official Python image ships its stdlib without bytecode, so every
+# container would compile it at runtime; do it once here (changes only with the
+# base image).
+RUN python -m compileall -q -j 0 --invalidation-mode unchecked-hash "$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')" >/dev/null || true
+
 # Remove any non-Noto fonts that may have been installed as dependencies.
 RUN find /usr/share/fonts -type f ! -iname 'Noto*' -delete \
     && find /usr/share/fonts -type d -empty -delete \
     && fc-cache -fsv
+
+# Fork: headless browser for exports. Fail the build if it can't resolve a
+# library, then render once so its bundled fontconfig writes its caches into
+# the image instead of into every container. Placed before any code-dependent
+# layer so it is rebuilt only with the browser or system packages.
+COPY --link --from=assets-builder /opt/chrome-headless-shell /opt/chrome-headless-shell
+RUN ! ldd "$(readlink -f "$PUPPETEER_EXECUTABLE_PATH")" | grep "not found" \
+    && "$PUPPETEER_EXECUTABLE_PATH" --version \
+    && "$PUPPETEER_EXECUTABLE_PATH" --no-sandbox --disable-gpu --dump-dom \
+    "data:text/html,<p style='font-family:sans-serif'>x &#10003; &#128640;</p>" >/dev/null \
+    && rm -rf /tmp/* /root/.config /root/.cache/chromium /root/.pki
 
 RUN mkdir -p /app/scripts /app/servers/fastapi /app/servers/nextjs
 RUN mkdir -p /app_data/exports /app_data/images /app_data/uploads /app_data/fonts /app_data/templates /app_data/pptx-to-html /app_data/pptx-to-json \
@@ -233,12 +261,8 @@ COPY --link --from=assets-builder /app/document-extraction-liteparse /app/docume
 COPY --link --from=assets-builder /app/presentation-export /app/presentation-export
 COPY --link --from=assets-builder /app/scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
 
-COPY --link --from=assets-builder /opt/chrome-headless-shell /opt/chrome-headless-shell
-
 RUN test -f /app/presentation-export/runner.mjs \
-    && test -f /app/presentation-export/node_modules/@presenton/export-core/dist/index.js \
-    && ! ldd "$(readlink -f "$PUPPETEER_EXECUTABLE_PATH")" | grep "not found" \
-    && "$PUPPETEER_EXECUTABLE_PATH" --version
+    && test -f /app/presentation-export/node_modules/@presenton/export-core/dist/index.js
 
 COPY --link --from=nextjs-builder /app/nextjs-node_modules /app/servers/nextjs/node_modules
 COPY --link --from=nextjs-builder /app/servers/nextjs/.next-build/standalone/ /app/servers/nextjs/
