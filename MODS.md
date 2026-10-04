@@ -7,7 +7,8 @@ assistant uses**, instead of only relaying prompts to the internal LLM.
 It bridges upstream's chat tool registry (`services/chat/tools.py` →
 `ChatTools`) to HTTP routes, and from there to MCP tools. Tools that upstream
 adds or changes are picked up automatically. Mod code lives in new files; edits
-to upstream files are a few hook lines.
+to upstream files are a few hook lines (the image build is a separate
+`Dockerfile.fork`).
 
 Use this file as the checklist when resolving merge conflicts with upstream.
 
@@ -39,6 +40,7 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 | `servers/fastapi/tests/unit/test_canvas_api.py` | Bridge, context and reorder tests against a real in-memory SQLite DB, plus an end-to-end MCP test. |
 | `servers/fastapi/tests/unit/test_mcp_canvas.py` | Registration, spec and per-mode exposure tests. |
 | `servers/fastapi/tests/unit/test_openapi_spec_fresh.py` | Fails CI when `openai_spec.json` doesn't match `app.openapi()`. |
+| `Dockerfile.fork` | The fork's image build (see below). Upstream's `Dockerfile` is left untouched. |
 | `MODS.md` | This file. |
 
 ## Fork CI (new files, see PR #2)
@@ -50,6 +52,52 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 | `.github/scripts/docker-smoke-test.sh` | Smoke test through nginx: MCP handshake and canvas tools, canvas API, web UI, PDF/PPTX export, offline OCR, offline mem0 embedding. |
 | `docker-compose.fork.yml` | Runs the published image on a server: no repo checkout, `.env` passthrough, healthcheck. |
 
+## `Dockerfile.fork`
+
+A copy of upstream's `Dockerfile`, optimised to minimise disk writes on a server that pulls updates often; every difference is marked `Fork:`. Upstream's `Dockerfile` stays untouched, so syncs never conflict on it. Instead, the upstream-sync PR shows upstream's Dockerfile diff: **port relevant changes into `Dockerfile.fork`** (new runtime files or packages, version bumps). The CI smoke test catches a port that breaks the app.
+
+- **Browser:** `chrome-headless-shell` instead of full Chromium, GTK/X11 and ~760 MB of fonts.
+  - amd64: Chrome for Testing, at the version the export runtime's puppeteer pins, `en-US` locale only.
+  - arm64: Debian's `chromium-headless-shell` at `CHROMIUM_VERSION`.
+  - Only the libraries the browser links are installed, plus a `libgbm1` repackaged without its mesa/LLVM dependency.
+  - `PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell`; `/usr/bin/chromium` links to it, for upstream's compose file.
+  - The build fails if the browser can't resolve a library or print its version.
+- **Fonts:** of `fonts-noto-core`, only the Latin/Greek/Cyrillic Sans, Serif and Mono faces, Symbols, Symbols2 and Math (dpkg `path-include`), plus `fonts-noto-color-emoji`. See the known limitations below.
+- **Layers:**
+  - The backend project isn't installed into `/opt/venv`; a `.pth` file puts `/app/servers/fastapi` on `sys.path`.
+  - Every runtime `COPY` uses `--link`.
+  - Large, rarely changing parts get their own layers: backend `static/` + `assets/`, Next.js `node_modules`.
+  - Backend code is copied last.
+- **Fast-moving packages:** `ARG FAST_MOVING_GROUPS` gives each group its own small layer under `/opt/venv-fast/<group>`:
+  - `llmai` (6 MB)
+  - `docs`: lxml, python-pptx, xlsxwriter, fonttools (36 MB)
+  - `mcp`: fastmcp, mcp, httpx2, starlette, … (16 MB)
+
+  The builder sets `PYTHONDONTWRITEBYTECODE=1`, so a reinstall produces a byte-identical venv. 27 of upstream's last 37 lock updates would leave the 552 MB venv layer untouched.
+- **Bytecode:** compiled at build time, so containers don't write it:
+  - venv: deterministic `unchecked-hash`, before the code copy;
+  - backend: `checked-hash`;
+  - stdlib: in a stable layer.
+
+  A build-time render bakes the browser's fontconfig caches. A fresh container writes ~0.1 MB.
+- **Slimming:**
+  - Native libraries are stripped and bundled `tests/` dirs removed.
+  - sympy and mpmath are removed (`ARG REMOVE_PACKAGES`).
+  - Duplicated or unused Node assets are removed: standalone `public/`, musl and wasm sharp builds, source maps, type definitions, LiteParse's `src/`, tesseract.js's browser builds. LiteParse shares Next.js's libvips when the versions match.
+  - Node is installed without headers or npm/corepack (`start.js` only runs npm with `--dev`).
+- **OCR:** LiteParse uses tesseract.js (WASM), so only `tesseract-ocr-eng`'s language data is installed. `LITEPARSE_TESSDATA_PATH=/usr/share/tessdata` points at it, so OCR works offline; upstream's image fetches models from a CDN. With `INSTALL_TESSERACT=false`, set `LITEPARSE_TESSDATA_PATH=` (empty) to use the CDN.
+- **mem0 model:** `FASTEMBED_CACHE_PATH=/root/.cache/fastembed`, with `BAAI/bge-small-en-v1.5` baked in as its own layer. Upstream downloaded it into the builder's `/tmp` only, so every container fetched it again.
+
+Measured locally:
+
+| | upstream `Dockerfile` | `Dockerfile.fork` |
+| --- | --- | --- |
+| Image layers | 3,697 MB | 1,857 MB (incl. the 67 MB mem0 model) |
+| Re-shipped by a backend-only update | 1,665 MB | 8.2 MB |
+| Re-shipped by a frontend-only update | — | 26 MB |
+| Re-shipped by an llmai-only lock update | ~1,665 MB | ~14 MB |
+| Written by a fresh container | ~66 MB, plus ~67 MB on first mem0 use | ~0.1 MB |
+
 ## Upstream files touched
 
 | File | Change | Why | On conflict |
@@ -57,7 +105,6 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 | `servers/fastapi/api/v1/ppt/router.py` | +1 import, +1 `include_router(CANVAS_ROUTER)` at the end | Hook for the mod. | Take upstream, re-add both lines. |
 | `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` | Hook for the mod. | Take upstream, re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
 | `servers/fastapi/tests/unit/test_mcp_server_auth.py` | +1 import; `test_mcp_tools_follow_presentation_generation_mode` asserts `expected_tools \| get_canvas_tool_names(generation_mode)` | Hook for the mod. | Take upstream, re-add the import and the `\| get_canvas_tool_names(...)` on that assert. |
-| `Dockerfile` | **Layers:** the backend project is not installed into `/opt/venv` (a constant `presenton-backend.pth` puts `/app/servers/fastapi` on `sys.path`); the spaCy model install sits above the code copy; every runtime `COPY` uses `--link`; large, rarely changing parts get their own layers (backend `static/` + `assets/`, Next.js `node_modules`) and backend code is copied last. **Fast-moving packages:** groups that change far more often than the rest of `uv.lock` (from upstream's 37 lock updates) live in their own small layers under `/opt/venv-fast/<group>` (each added via a `.pth` file; `ARG FAST_MOVING_GROUPS`, and one runtime `COPY` per group): `llmai` (Presenton's LLM client, 14 changes, mostly alone; 6 MB), `docs` (lxml, python-pptx, xlsxwriter, fonttools, which bump together; 36 MB), `mcp` (fastmcp, mcp, httpx2, starlette, … from its last bump; 16 MB). With the builder's `PYTHONDONTWRITEBYTECODE=1` a reinstall produces a byte-identical venv, so 27 of those 37 updates would leave the 552 MB venv layer untouched (verified by swapping llmai 0.3.15 → 0.3.14: ~14 MB re-shipped instead of ~669 MB). sympy and mpmath are removed (`ARG REMOVE_PACKAGES`; only onnxruntime's offline model tools import them). **Bytecode (minimises runtime disk writes):** the venv is compiled in its own step before the code copy (deterministic `unchecked-hash` pycs, so the layer changes only with `uv.lock`), the backend after the code copy (`checked-hash`), and the stdlib (which the official Python image ships without bytecode) in a stable runtime layer; the headless browser renders once at build time so its bundled fontconfig caches are baked in, and huggingface_hub's timestamped logs are removed so the cache dir copy is deterministic. A fresh container writes ~0.1 MB instead of ~66 MB. **Slimming:** venv native libraries stripped, packages' `tests/` removed, the standalone build's duplicate `public/` and musl sharp builds removed, source maps/type definitions/sharp wasm removed from the export and LiteParse node trees, LiteParse's duplicate `src/` and tests and tesseract.js's inlined browser builds (`*.wasm.js`) removed, LiteParse's libvips linked to Next.js's copy when the sharp/libvips versions match, Node stripped and installed without headers or npm/corepack (dpkg `path-exclude`; npm only runs with `start.js --dev`). **OCR:** LiteParse uses tesseract.js (WASM), so only `tesseract-ocr-eng` (language data) is installed, without the tesseract binary, its libraries or `libicu76`; `LITEPARSE_TESSDATA_PATH=/usr/share/tessdata` points at it, so OCR also works offline (upstream's image downloads models from a CDN). With `INSTALL_TESSERACT=false`, set `LITEPARSE_TESSDATA_PATH=` (empty) to fall back to the CDN. **mem0 model:** `FASTEMBED_CACHE_PATH=/root/.cache/fastembed`, with mem0's default embedding model (`BAAI/bge-small-en-v1.5`) baked in before the code copy and copied as its own layer; upstream's warm-up downloaded it to `/tmp/fastembed_cache` in the builder only, so every container re-downloaded it (and failed offline). **Browser:** full Chromium + GTK/X11 + ~760 MB of fonts are replaced by `chrome-headless-shell` (amd64: Chrome for Testing at the version the export runtime's puppeteer pins, installed in `assets-builder`, `en-US` locale only; arm64: Debian's `chromium-headless-shell` at `CHROMIUM_VERSION`), only the libraries it links, a `libgbm1` repackaged without its mesa/LLVM dependency, and `fonts-noto-core` (only Latin/Greek/Cyrillic Sans, Serif, Mono, Symbols, Symbols2 and Math, via dpkg `path-include`; 54 → 18 MB with emoji) + `fonts-noto-color-emoji`. The build-time render that bakes the browser's fontconfig caches is best-effort, because Chromium's GPU process crashes under QEMU (cross-arch builds); exports themselves work there. `PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell`; `/usr/bin/chromium` links to it for upstream's compose file. The build fails if the browser is missing a library. | Measured locally: image layers 3,697 MB → 1,857 MB (incl. the 67 MB mem0 model); a backend-only update re-ships 8.2 MB (was 1,665 MB), a frontend-only update 26 MB, an llmai-only lock update ~14 MB; a fresh container writes ~0.1 MB at runtime (was ~66 MB of bytecode, plus a ~67 MB mem0 model download on first use). PDF/PPTX export, template previews and MCP generation keep working (CI smoke test exports both formats and runs offline OCR). | Take upstream, then re-apply. If upstream changed the runtime package list, keep their non-GUI additions; if they bumped puppeteer, nothing to do (the headless shell follows it). |
 | `nginx.conf` | `proxy_redirect` in the `/mcp/` location rewrites FastMCP's slash redirect (`http://localhost:8001/mcp`, built from the internal Host) to the public origin (`X-Forwarded-*`, else the request's Host) | Remote MCP clients that use `/mcp/` can follow the redirect instead of being sent to localhost. | Take upstream, re-add the `proxy_redirect` line in `location /mcp/`. |
 | `servers/fastapi/openai_spec.json` | Regenerated; includes the canvas routes and every tool's input schema | MCP tools are built from this static file. | Never hand-merge (one line). The upstream-sync workflow resolves a spec-only conflict and regenerates automatically. By hand: take either side, then regenerate (below). |
 
@@ -73,6 +120,15 @@ PYTHONPATH=. uv run --locked python scripts/generate_openapi_spec.py
 `api.main.app.openapi()`. The output is deterministic and doesn't depend on env
 vars. Upstream changing a chat tool's schema also changes the spec, and
 `tests/unit/test_openapi_spec_fresh.py` fails until it's regenerated.
+
+## Known limitations
+
+- **Latin-only fallback fonts (by choice).** The image keeps only Latin/Greek/Cyrillic, symbol, math and emoji fonts. Slides normally carry their own web fonts, but Arabic, Hebrew, Indic, CJK or Thai text in a font without those glyphs renders as boxes in exports. To support them, widen the `path-include` lines in `Dockerfile.fork` (or add `fonts-noto-cjk`).
+- **Unpinned downloads.** These two downloads are not hash-pinned:
+  - **Chrome for Testing** comes over HTTPS from Google's Chrome for Testing bucket, at the exact version the export runtime's puppeteer lockfile pins. Google publishes no per-archive checksums, and hardcoding one would break following puppeteer's version.
+  - **The mem0 model** (`BAAI/bge-small-en-v1.5`) is fetched by name from Hugging Face, because fastembed doesn't accept a revision. The step only re-runs when `uv.lock` changes, and the snapshot directory in `/root/.cache/fastembed` records the revision in use.
+- **Smart-slide HTML can make the export browser fetch URLs (inherited).** HTML saved with `smartSaveSlide`, or by the in-app chat, may reference `http(s)` URLs, which headless Chrome fetches from inside the container during preview/export (SSRF). Upstream's sanitizer strips scripts and event handlers, not URLs. MCP adds API-key callers to the in-app chat's existing exposure. That's acceptable for a single-user, self-hosted install with trusted keys; restrict subresource URLs before exposing MCP to untrusted callers.
+- **Concurrent slide-index changes aren't locked.** This matches upstream's chat paths and is fine for single-user use.
 
 ## Upstream APIs the mod depends on
 
