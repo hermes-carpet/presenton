@@ -1,0 +1,30 @@
+# Runs this fork's published image on a server. No repo checkout or build
+# needed: copy this file next to an optional .env and run
+#   docker compose -f docker-compose.fork.yml up -d
+#
+# Put provider settings (LLM, OPENAI_API_KEY, IMAGE_PROVIDER, ...) in .env;
+# they are passed into the container as-is. See README "Environment variables".
+# MCP endpoint: http://<server>:<port>/mcp (bearer: a Presenton API key).
+services:
+  presenton:
+    image: ghcr.io/hermes-carpet/presenton:${PRESENTON_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${PRESENTON_HTTP_HOST_PORT:-5001}:80"
+    volumes:
+      - ./app_data:/app_data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PRESENTON_HOST_HTTP_PORT: ${PRESENTON_HTTP_HOST_PORT:-5001}
+      # Browser-reachable origin used for edit/download links returned to MCP
+      # clients, e.g. http://my-server:5001 or https://slides.example.com
+      PRESENTON_PUBLIC_URL: ${PRESENTON_PUBLIC_URL:-}
+      MIGRATE_DATABASE_ON_STARTUP: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 3m
+      retries: 3

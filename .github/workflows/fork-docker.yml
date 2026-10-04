@@ -1,0 +1,342 @@
+# Builds this fork's image (Dockerfile.fork) and publishes it to
+# ghcr.io/<owner>/<repo> as a multi-arch manifest tagged latest, <version>
+# (package.json version without "v" or pre-release suffix, e.g. 0.9.11),
+# <full version> (e.g. 0.9.11-beta) and sha-<commit>. Runs after
+# "Test All Applications" passes on main, or manually.
+#
+# Each architecture builds and is smoke-tested natively (web UI, canvas API,
+# MCP through nginx, PDF/PPTX export, offline OCR and mem0), then pushed by
+# digest (untagged) and checked to have exactly the tested image's layers.
+# The tags are published only if amd64 passed. arm64 is best-effort (native
+# ubuntu-24.04-arm runner): if it fails, the tags are published amd64-only,
+# with a warning and an upstream-sync issue comment.
+#
+# Only a build of main's current head moves latest, <version> and
+# <full version>; manual runs on other branches, and re-runs of older main
+# test runs, publish only sha-<commit>.
+#
+# Upstream's docker-release.yml is left untouched. It targets
+# ghcr.io/presenton/presenton and runs on GitHub releases and manual dispatch,
+# like sync-releaes-to-r2.yml (releases); disable both, and
+# electron-linux-ubuntu22.yml, in the Actions tab (see MODS.md).
+name: Fork Docker image
+
+on:
+  workflow_run:
+    # Upstream's test workflow (test-all.yml). If upstream renames it, update this.
+    workflows: ["Test All Applications"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+concurrency:
+  # A newer main supersedes an older build, so `latest` never moves backwards.
+  group: fork-docker
+  cancel-in-progress: true
+
+env:
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  SMOKE_TAG: presenton-fork:smoke
+  SYNC_LABEL: upstream-sync
+
+jobs:
+  meta:
+    name: Prepare tags
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      version: ${{ steps.meta.outputs.version }}
+      full_version: ${{ steps.meta.outputs.full_version }}
+      moving_tags: ${{ steps.meta.outputs.moving_tags }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Compute image name and version
+        id: meta
+        run: |
+          full_version=$(node -p "require('./package.json').version")
+          full_version=${full_version#v}
+          version=${full_version%%-*}
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || ! [[ "$full_version" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Unexpected package.json version: ${full_version}"
+            exit 1
+          fi
+          # Moving tags only for main (the post-test trigger, or a manual run on
+          # main), and only for main's current head: re-running an older test
+          # run must not move latest backwards.
+          moving_tags=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ] || [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            main_head=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)
+            if [ "$SOURCE_SHA" = "$main_head" ]; then
+              moving_tags=true
+            else
+              echo "::notice::${SOURCE_SHA} is not main's current head (${main_head}); publishing only sha-${SOURCE_SHA:0:7}."
+            fi
+          fi
+          {
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "moving_tags=${moving_tags}"
+            echo "version=${version}"
+            echo "full_version=${full_version}"
+            echo "short_sha=${SOURCE_SHA:0:7}"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$moving_tags" = "true" ]; then
+            echo "Tags: latest, ${version}, ${full_version}, sha-${SOURCE_SHA:0:7}"
+          else
+            echo "Only sha-${SOURCE_SHA:0:7} will be published."
+          fi
+
+  build:
+    name: Build and smoke-test (${{ matrix.arch }})
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    # arm64 is best-effort; amd64 failures fail the workflow.
+    continue-on-error: ${{ !matrix.required }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            required: true
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            required: false
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout tested commit
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        id: login
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image for smoke test
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.fork
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: ${{ env.SMOKE_TAG }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+
+      - name: Smoke test
+        id: smoke
+        run: .github/scripts/docker-smoke-test.sh "$SMOKE_TAG"
+
+      - name: Push image by digest
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.fork
+          platforms: linux/${{ matrix.arch }}
+          # Plain image manifest (no attestation index), so its layers can be
+          # compared with the tested image below.
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+          # Registry cache: no 10 GB limit like the GitHub Actions cache.
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+
+      - name: Verify the pushed image is the tested one
+        id: verify
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # The push re-runs the build from cache; require exactly the same
+          # filesystem layers as the image the smoke test ran.
+          tested=$(docker image inspect "$SMOKE_TAG" --format '{{json .RootFS.Layers}}' | jq -c .)
+          pushed=$(docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --format '{{json .Image.RootFS.DiffIDs}}' | jq -c .)
+          if [ "$tested" != "$pushed" ]; then
+            echo "::error::Pushed image ${DIGEST} differs from the smoke-tested image."
+            echo "tested: ${tested}"
+            echo "pushed: ${pushed}"
+            exit 1
+          fi
+          echo "Pushed ${DIGEST} has the tested image's $(jq length <<<"$tested") layers."
+
+      - name: Save digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          echo "$DIGEST" > "${RUNNER_TEMP}/digests/${ARCH}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/${{ matrix.arch }}
+          retention-days: 1
+
+      - name: Record failed step
+        if: failure()
+        env:
+          OUTCOMES: >-
+            checkout=${{ steps.checkout.outcome }}
+            buildx=${{ steps.buildx.outcome }}
+            login=${{ steps.login.outcome }}
+            build=${{ steps.build.outcome }}
+            smoke-test=${{ steps.smoke.outcome }}
+            push=${{ steps.push.outcome }}
+            verify=${{ steps.verify.outcome }}
+        run: |
+          failed=unknown
+          for pair in $OUTCOMES; do
+            if [ "${pair#*=}" = "failure" ]; then failed=${pair%%=*}; break; fi
+          done
+          mkdir -p "${RUNNER_TEMP}/failures"
+          echo "$failed" > "${RUNNER_TEMP}/failures/${ARCH}"
+
+      - name: Upload failed step
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-${{ matrix.arch }}
+          path: ${{ runner.temp }}/failures/${{ matrix.arch }}
+          retention-days: 1
+
+  publish:
+    name: Publish multi-arch tags
+    needs: [meta, build]
+    if: always() && needs.meta.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      FULL_VERSION: ${{ needs.meta.outputs.full_version }}
+      MOVING_TAGS: ${{ needs.meta.outputs.moving_tags }}
+      SHORT_SHA: ${{ needs.meta.outputs.short_sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Download digests
+        # Matches nothing if every build failed (or none failed).
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Download failure notes
+        # Matches nothing if every build failed (or none failed).
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: failure-*
+          path: ${{ runner.temp }}/failures
+          merge-multiple: true
+
+      - name: Select platforms
+        id: platforms
+        run: |
+          digests="${RUNNER_TEMP}/digests"
+          if [ ! -s "${digests}/amd64" ]; then
+            echo "::error::amd64 build, smoke test or push failed; nothing is published."
+            exit 1
+          fi
+          refs="${IMAGE}@$(cat "${digests}/amd64")"
+          if [ -s "${digests}/arm64" ]; then
+            refs="${refs} ${IMAGE}@$(cat "${digests}/arm64")"
+            echo "arm64_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "arm64_ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "refs=${refs}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest
+        env:
+          REFS: ${{ steps.platforms.outputs.refs }}
+        run: |
+          tags=(-t "${IMAGE}:sha-${SHORT_SHA}")
+          if [ "$MOVING_TAGS" = "true" ]; then
+            tags+=(-t "${IMAGE}:latest" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${FULL_VERSION}")
+          fi
+          # shellcheck disable=SC2086 # REFS is a space-separated list
+          docker buildx imagetools create "${tags[@]}" $REFS
+          docker buildx imagetools inspect "${IMAGE}:sha-${SHORT_SHA}"
+
+      - name: Report missing arm64
+        if: steps.platforms.outputs.arm64_ok == 'false'
+        run: |
+          step=$(cat "${RUNNER_TEMP}/failures/arm64" 2>/dev/null || echo "unknown (job cancelled or timed out)")
+          if [ "$MOVING_TAGS" = "true" ]; then
+            published="latest, ${VERSION}, ${FULL_VERSION} and sha-${SHORT_SHA}"
+          else
+            published="sha-${SHORT_SHA}"
+          fi
+          message="arm64 image failed at step '${step}'; published ${published} as amd64-only."
+          echo "::warning::${message}"
+          {
+            echo "### arm64 not published"
+            echo
+            echo "${message}"
+            echo
+            echo "Run: ${RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          body="${RUNNER_TEMP}/issue.md"
+          {
+            echo "Fork image (\`sha-${SHORT_SHA}\`): ${message}"
+            echo
+            echo "Run: ${RUN_URL}"
+          } > "$body"
+          gh label create "$SYNC_LABEL" --repo "$GITHUB_REPOSITORY" --color 5319e7 \
+            --description "Automated upstream sync needs attention" 2>/dev/null || true
+          issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Fork image: arm64 build failed" \
+              --label "$SYNC_LABEL" --body-file "$body"
+          fi

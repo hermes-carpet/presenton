@@ -1,0 +1,617 @@
+# Merges presenton/presenton main into this fork and opens a PR when the
+# FastAPI tests pass. Conflicts and test failures are reported as issues
+# labelled `upstream-sync`. Nothing is merged into main automatically.
+#
+# Two jobs, so unreviewed upstream code never runs where the write token is:
+# - merge: read-only. Merges upstream, uploads the merge (git bundle) and the
+#   reports, then regenerates the OpenAPI spec and runs the tests (which
+#   execute upstream code) without any write credentials.
+# - publish: the only job with UPSTREAM_SYNC_TOKEN. It never runs merged code:
+#   it pushes the bundled commits and opens PRs/issues.
+#
+# A push made with the PAT runs the workflows of the pushed branch, so if
+# upstream changed anything under .github/, nothing is pushed until you have
+# reviewed it: the issue lists the changes, and you approve them by running
+# this workflow manually with reviewed_upstream_sha set to that upstream
+# commit's full SHA.
+#
+# UPSTREAM_SYNC_TOKEN: a fine-grained PAT for this repo with Contents,
+# Workflows, Pull requests and Issues read/write (GITHUB_TOKEN can't push
+# commits that touch .github/workflows/*). Store it as a secret of the
+# `upstream-sync` environment, limited to the main branch, so workflows that
+# upstream adds on sync branches can't read it.
+name: Upstream sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_upstream_sha:
+        description: >-
+          Full 40-character upstream commit SHA whose .github/ changes you have
+          reviewed (from the upstream-sync issue). Required to push a merge that
+          changes them.
+        required: false
+        default: ""
+  schedule:
+    - cron: "23 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: presenton/presenton
+  UPSTREAM_BRANCH: main
+  BASE_BRANCH: main
+  SYNC_LABEL: upstream-sync
+  SPEC_PATH: servers/fastapi/openai_spec.json
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  merge:
+    name: Merge upstream and test (read-only)
+    if: github.repository != 'presenton/presenton'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      new: ${{ steps.upstream.outputs.new }}
+      conflict: ${{ steps.merge.outputs.conflict }}
+      branch: ${{ steps.upstream.outputs.branch }}
+      pr_number: ${{ steps.upstream.outputs.pr_number }}
+      today: ${{ steps.upstream.outputs.today }}
+      range: ${{ steps.upstream.outputs.range }}
+      merge_sha: ${{ steps.merge.outputs.merge_sha }}
+      upstream_sha: ${{ steps.upstream.outputs.upstream_sha }}
+      github_changes_blocked: ${{ steps.report.outputs.github_changes_blocked }}
+    env:
+      # Upstream files the fork modifies or builds on (see MODS.md). Changes to
+      # them are listed in the sync PR for review even when they merge cleanly.
+      WATCHED_PATHS: >-
+        Dockerfile docker-compose.yml nginx.conf start.js
+        scripts/sync-presentation-export.cjs scripts/run-presentation-export.mjs
+        servers/fastapi/services/export_task_service.py
+        servers/fastapi/services/chat/tools.py servers/fastapi/services/chat/schemas.py
+        servers/fastapi/services/chat/prompts.py servers/fastapi/services/chat/memory_layer.py
+        servers/fastapi/services/chat/presentation_context_store.py
+        servers/fastapi/mcp_server.py servers/fastapi/api/v1/ppt/router.py
+        servers/fastapi/tests/unit/test_mcp_server_auth.py
+      # Same env as test-all.yml's test-fastapi job.
+      APP_DATA_DIRECTORY: /tmp/presenton-app-data
+      TEMP_DIRECTORY: /tmp/presenton-temp
+      DATABASE_URL: sqlite+aiosqlite:////tmp/presenton-test.db
+      DISABLE_ANONYMOUS_TRACKING: "true"
+      DISABLE_IMAGE_GENERATION: "true"
+
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch upstream
+        id: upstream
+        env:
+          # Read-only token, used before any upstream code runs.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+          upstream_sha=$(git rev-parse FETCH_HEAD)
+          today=$(date -u +%F)
+
+          # Reuse the branch of an open sync PR so it gets updated, not duplicated.
+          pr_number=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base "$BASE_BRANCH" --limit 100 \
+            --json number,headRefName --jq '[.[] | select(.headRefName | startswith("sync/upstream-"))][0].number // empty')
+          if [ -n "$pr_number" ]; then
+            branch=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
+            git fetch --no-tags origin "${branch}:refs/remotes/origin/${branch}"
+            git checkout -B "$branch" "refs/remotes/origin/${branch}"
+          else
+            # Unique per upstream state, so reruns never collide with a stale branch.
+            branch="sync/upstream-${today}-${upstream_sha:0:8}"
+            git checkout -B "$branch" "origin/${BASE_BRANCH}"
+          fi
+
+          if git merge-base --is-ancestor "$upstream_sha" HEAD \
+            && git merge-base --is-ancestor "origin/${BASE_BRANCH}" HEAD; then
+            echo "Nothing new from upstream."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base_sha=$(git merge-base HEAD "$upstream_sha")
+          {
+            echo "new=true"
+            echo "today=${today}"
+            echo "branch=${branch}"
+            echo "pr_number=${pr_number}"
+            echo "upstream_sha=${upstream_sha}"
+            echo "base_sha=${base_sha}"
+            echo "range=${base_sha:0:8}..${upstream_sha:0:8}"
+            echo "compare_url=https://github.com/${UPSTREAM_REPO}/compare/${base_sha}...${upstream_sha}"
+            echo "commit_count=$(git rev-list --count "${base_sha}..${upstream_sha}")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream
+        id: merge
+        if: steps.upstream.outputs.new == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
+          RANGE: ${{ steps.upstream.outputs.range }}
+        run: |
+          conflicts_file="${RUNNER_TEMP}/conflicts.txt"
+          : > "$conflicts_file"
+          spec_resolved=false
+
+          # Merge $1; on conflict, record the files and abort. A conflict in
+          # the generated OpenAPI spec alone is resolved by taking either side,
+          # since a later step regenerates it from the merged code.
+          merge_ref() {
+            if git merge --no-ff --no-edit "$@"; then
+              return 0
+            fi
+            conflicts=$(git diff --name-only --diff-filter=U)
+            if [ "$conflicts" = "$SPEC_PATH" ]; then
+              git checkout --theirs -- "$SPEC_PATH"
+              git add "$SPEC_PATH"
+              git commit --no-edit
+              spec_resolved=true
+              return 0
+            fi
+            echo "$conflicts" >> "$conflicts_file"
+            git merge --abort
+            return 1
+          }
+
+          # An existing sync branch may lag behind main; bring it up to date first.
+          if ! git merge-base --is-ancestor "origin/${BASE_BRANCH}" HEAD; then
+            merge_ref "origin/${BASE_BRANCH}" || true
+          fi
+
+          if [ ! -s "$conflicts_file" ]; then
+            merge_ref -m "Merge upstream ${UPSTREAM_REPO} ${UPSTREAM_BRANCH} (${RANGE})" "$UPSTREAM_SHA" || true
+          fi
+
+          echo "spec_resolved=${spec_resolved}" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ -s "$conflicts_file" ]; then
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "Conflicting files:"
+            cat "$conflicts_file"
+          else
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write merge report and bundle
+        id: report
+        if: steps.upstream.outputs.new == 'true'
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_upstream_sha }}
+          TODAY: ${{ steps.upstream.outputs.today }}
+          RANGE: ${{ steps.upstream.outputs.range }}
+          COMPARE_URL: ${{ steps.upstream.outputs.compare_url }}
+          COMMIT_COUNT: ${{ steps.upstream.outputs.commit_count }}
+          BASE_SHA: ${{ steps.upstream.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
+          BRANCH: ${{ steps.upstream.outputs.branch }}
+          CONFLICT: ${{ steps.merge.outputs.conflict }}
+          SPEC_RESOLVED: ${{ steps.merge.outputs.spec_resolved }}
+        run: |
+          out="${RUNNER_TEMP}/merge"
+          mkdir -p "$out"
+          {
+            echo "- Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
+            if [ "$SPEC_RESOLVED" = "true" ]; then
+              echo "- Upstream conflict in \`${SPEC_PATH}\` resolved by regenerating"
+            fi
+          } > "${out}/summary.md"
+
+          if [ "$CONFLICT" = "true" ]; then
+            {
+              echo "Merging \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` into \`${BASE_BRANCH}\` conflicts (${TODAY})."
+              echo
+              echo "Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
+              echo
+              echo "Conflicting files:"
+              echo
+              echo '```'
+              sort -u "${RUNNER_TEMP}/conflicts.txt" | tr -d '`'
+              echo '```'
+              if grep -qx "$SPEC_PATH" "${RUNNER_TEMP}/conflicts.txt"; then
+                echo
+                echo "Don't hand-merge \`${SPEC_PATH}\`: take either side, then regenerate it (command in MODS.md)."
+              fi
+              echo
+              echo "Nothing was pushed. Resolve with MODS.md as the checklist."
+            } > "${out}/conflict.md"
+            exit 0
+          fi
+
+          # Upstream changes under .github/ (workflows, actions) would run with
+          # this repo's secrets as soon as the merge is pushed, so they need a
+          # human review first.
+          github_changes=$(git diff --no-renames --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github || true)
+          blocked=false
+          if [ -n "$github_changes" ]; then
+            # Exact full SHA only: a short prefix could be matched by a later,
+            # crafted upstream commit.
+            if [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$REVIEWED_SHA" = "$UPSTREAM_SHA" ]; then
+              echo "Upstream .github/ changes were reviewed at ${UPSTREAM_SHA}; proceeding."
+            else
+              if [ -n "$REVIEWED_SHA" ]; then
+                echo "::warning::reviewed_upstream_sha must be the full SHA of the current upstream commit (${UPSTREAM_SHA}); not proceeding."
+              fi
+              blocked=true
+            fi
+          fi
+          echo "github_changes_blocked=${blocked}" >> "$GITHUB_OUTPUT"
+          if [ "$blocked" = "true" ]; then
+            {
+              echo "Upstream changed files under \`.github/\` (${TODAY}). Nothing was pushed: a push would run these workflow changes with this repo's secrets before review."
+              echo
+              echo "Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
+              echo
+              echo "Changed files (status, path, triggers):"
+              echo
+              echo '```'
+              while read -r status file; do
+                triggers=$(git show "${UPSTREAM_SHA}:${file}" 2>/dev/null \
+                  | sed -n '/^on:/,/^[a-z]/p' | grep -oE '^  [a-z_]+' | tr -d ' ' | paste -sd, - || true)
+                echo "${status} ${file}${triggers:+ (triggers: ${triggers})}" | tr -d '`'
+              done <<< "$github_changes"
+              echo '```'
+              echo
+              echo "After reviewing them (compare link above), run the **Upstream sync** workflow manually with \`reviewed_upstream_sha\` set to this full SHA:"
+              echo
+              echo '```'
+              echo "$UPSTREAM_SHA"
+              echo '```'
+              echo
+              echo "Disable any new workflow that doesn't apply to this fork in the Actions tab after merging."
+            } > "${out}/github-changes.md"
+          fi
+
+          # Reports for the PR body (git only; no upstream code has run yet).
+          workflow_changes=$(git diff --no-renames --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github/workflows || true)
+          # shellcheck disable=SC2086 # WATCHED_PATHS is a space-separated list
+          watched_changes=$(git diff --stat=100 "$BASE_SHA" "$UPSTREAM_SHA" -- $WATCHED_PATHS | sed '$d' || true)
+          dockerfile_diff=$(git diff "$BASE_SHA" "$UPSTREAM_SHA" -- Dockerfile || true)
+          {
+            if [ -n "$dockerfile_diff" ]; then
+              echo
+              echo "### Upstream Dockerfile changes to port into \`Dockerfile.fork\`"
+              echo
+              echo "<details><summary>diff</summary>"
+              echo
+              echo '```diff'
+              echo "$dockerfile_diff"
+              echo '```'
+              echo
+              echo "</details>"
+            fi
+            if [ -n "$watched_changes" ]; then
+              echo
+              echo "### Upstream changes to files the fork modifies or builds on"
+              echo
+              echo "These merged cleanly, but check them against MODS.md (e.g. export-runtime or chat-tool changes)."
+              echo
+              echo '```'
+              echo "$watched_changes"
+              echo '```'
+            fi
+            if [ -n "$workflow_changes" ]; then
+              echo
+              echo "### Upstream workflow changes (review before merging)"
+              echo
+              echo "These run in this fork once merged. Disable any that don't apply in the Actions tab after merging."
+              echo
+              echo '```'
+              while read -r status file; do
+                triggers=$(git show "${UPSTREAM_SHA}:${file}" 2>/dev/null \
+                  | sed -n '/^on:/,/^[a-z]/p' | grep -oE '^  [a-z_]+' | tr -d ' ' | paste -sd, - || true)
+                echo "${status} ${file}${triggers:+ (triggers: ${triggers})}" | tr -d '`'
+              done <<< "$workflow_changes"
+              echo '```'
+            fi
+          } > "${out}/review.md"
+
+          # The merge itself, relative to what the publish job will fetch.
+          prerequisites="^origin/${BASE_BRANCH}"
+          if git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null; then
+            prerequisites="${prerequisites} ^origin/${BRANCH}"
+          fi
+          # shellcheck disable=SC2086 # prerequisites is a space-separated list
+          git bundle create "${out}/merge.bundle" HEAD $prerequisites
+
+      - name: Upload merge
+        if: steps.upstream.outputs.new == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-merge
+          path: ${{ runner.temp }}/merge
+          retention-days: 7
+
+      # Everything below runs upstream code. No write credentials exist in this
+      # job; its results are treated as untrusted data by the publish job.
+      - name: Set up Python
+        if: steps.merge.outputs.conflict == 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        if: steps.merge.outputs.conflict == 'false'
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: servers/fastapi/uv.lock
+
+      - name: Regenerate OpenAPI spec
+        if: steps.merge.outputs.conflict == 'false'
+        working-directory: servers/fastapi
+        env:
+          MERGE_SHA: ${{ steps.merge.outputs.merge_sha }}
+        run: |
+          # The MCP server builds its tools from this static file, and
+          # tests/unit/test_openapi_spec_fresh.py fails when it is stale.
+          out="${RUNNER_TEMP}/tests"
+          mkdir -p "$out" "$APP_DATA_DIRECTORY" "$TEMP_DIRECTORY"
+          uv sync --locked --dev
+          if ! PYTHONPATH=. uv run --locked python scripts/generate_openapi_spec.py; then
+            echo "::warning::Could not regenerate the OpenAPI spec; the tests will show why."
+            echo "failed" > "${out}/spec_status"
+          elif git diff --quiet -- openai_spec.json; then
+            echo "unchanged" > "${out}/spec_status"
+          else
+            git add openai_spec.json
+            git commit -m "chore: regenerate openai_spec.json"
+            echo "regenerated" > "${out}/spec_status"
+            git bundle create "${out}/spec.bundle" HEAD "^${MERGE_SHA}"
+          fi
+
+      - name: Run FastAPI tests
+        if: steps.merge.outputs.conflict == 'false'
+        working-directory: servers/fastapi
+        run: |
+          out="${RUNNER_TEMP}/tests"
+          log="${RUNNER_TEMP}/pytest.log"
+          mkdir -p "$out" "$APP_DATA_DIRECTORY" "$TEMP_DIRECTORY"
+          set +e
+          {
+            uv sync --locked --dev \
+              && uv run --locked python -m pytest --verbose --tb=short
+          } 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+
+          summary=$(grep -E '^=+ .*(passed|failed|error).* in [0-9.]+s' "$log" | tail -1 | sed -E 's/^=+ //; s/ =+$//')
+          echo "${summary:-no pytest summary (see run log)}" > "${out}/summary"
+          grep -E '^(FAILED|ERROR) ' "$log" | sed -E 's/ - .*//' > "${out}/failures" || true
+          if [ "$status" -eq 0 ]; then echo passed > "${out}/result"; else echo failed > "${out}/result"; fi
+
+      - name: Upload test results
+        if: always() && steps.merge.outputs.conflict == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-tests
+          path: ${{ runner.temp }}/tests
+          retention-days: 7
+
+  publish:
+    name: Push and report (write token, no upstream code)
+    needs: merge
+    if: always() && needs.merge.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    environment: upstream-sync
+    env:
+      BRANCH: ${{ needs.merge.outputs.branch }}
+      PR_NUMBER: ${{ needs.merge.outputs.pr_number }}
+      TODAY: ${{ needs.merge.outputs.today }}
+      RANGE: ${{ needs.merge.outputs.range }}
+      MERGE_SHA: ${{ needs.merge.outputs.merge_sha }}
+      UPSTREAM_SHA: ${{ needs.merge.outputs.upstream_sha }}
+    steps:
+      - name: Check token
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Secret UPSTREAM_SYNC_TOKEN is not set. See the workflow header."
+            exit 1
+          fi
+
+      - name: Download merge
+        uses: actions/download-artifact@v4
+        with:
+          name: sync-merge
+          path: ${{ runner.temp }}/merge
+
+      - name: Download test results
+        if: needs.merge.outputs.conflict == 'false'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: sync-tests
+          path: ${{ runner.temp }}/tests
+
+      - name: Prepare issue reporting
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          gh label create "$SYNC_LABEL" --repo "$GITHUB_REPOSITORY" --color 5319e7 \
+            --description "Automated upstream sync needs attention" 2>/dev/null || true
+          # report_issue <kind> <title> <body-file>: comment on the open
+          # upstream-sync issue (or open one), once per kind and upstream commit.
+          cat > "${RUNNER_TEMP}/report_issue.sh" <<'SH'
+          report_issue() {
+            kind=$1; title=$2; body=$3
+            marker="<!-- upstream-sync:${kind}:${UPSTREAM_SHA} -->"
+            printf '\n%s\n' "$marker" >> "$body"
+            issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
+              --limit 100 --json number --jq '.[].number')
+            for issue in $issues; do
+              if gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --comments --json body,comments \
+                --jq '[.body] + [.comments[].body] | join("\n")' | grep -qF "$marker"; then
+                echo "Already reported on issue #${issue}."
+                return 0
+              fi
+            done
+            first=$(head -n 1 <<<"$issues")
+            if [ -n "$first" ]; then
+              gh issue comment "$first" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$SYNC_LABEL" --body-file "$body"
+            fi
+          }
+          SH
+
+      - name: Report upstream .github changes awaiting review
+        if: needs.merge.outputs.github_changes_blocked == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/report_issue.sh"
+          body="${RUNNER_TEMP}/issue.md"
+          { cat "${RUNNER_TEMP}/merge/github-changes.md"; echo; echo "Run: ${RUN_URL}"; } > "$body"
+          report_issue github-changes "Upstream sync: workflow changes need review" "$body"
+
+      - name: Report conflict
+        if: needs.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/report_issue.sh"
+          body="${RUNNER_TEMP}/issue.md"
+          { cat "${RUNNER_TEMP}/merge/conflict.md"; echo; echo "Run: ${RUN_URL}"; } > "$body"
+          report_issue conflict "Upstream sync conflict" "$body"
+
+      - name: Assemble the commits to push
+        id: assemble
+        if: needs.merge.outputs.conflict == 'false' && needs.merge.outputs.github_changes_blocked != 'true'
+        run: |
+          # Fetch the refs the bundle builds on, then the bundles themselves.
+          # Nothing from the merged tree is executed in this job.
+          git init -q sync && cd sync
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags origin "${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          if [ -n "$PR_NUMBER" ]; then
+            git fetch -q --no-tags origin "${BRANCH}:refs/remotes/origin/${BRANCH}"
+          fi
+          git fetch -q "${RUNNER_TEMP}/merge/merge.bundle" HEAD
+          if [ "$(git rev-parse FETCH_HEAD)" != "$MERGE_SHA" ]; then
+            echo "::error::Merge bundle does not contain the expected merge commit."
+            exit 1
+          fi
+          head="$MERGE_SHA"
+
+          # The spec regeneration commit comes from the job that ran upstream
+          # code: accept it only if it is one commit on top of the merge that
+          # changes nothing but the spec.
+          spec_status=$(head -c 20 "${RUNNER_TEMP}/tests/spec_status" 2>/dev/null | tr -cd '[:lower:]' || true)
+          spec_note="OpenAPI spec ${spec_status:-not regenerated}"
+          if [ -f "${RUNNER_TEMP}/tests/spec.bundle" ]; then
+            if git fetch -q "${RUNNER_TEMP}/tests/spec.bundle" HEAD \
+              && spec_sha=$(git rev-parse FETCH_HEAD) \
+              && [ "$(git rev-parse "${spec_sha}^")" = "$MERGE_SHA" ] \
+              && [ "$(git diff --name-only "$MERGE_SHA" "$spec_sha")" = "$SPEC_PATH" ]; then
+              head="$spec_sha"
+            else
+              echo "::warning::Ignoring the spec commit: it is not a spec-only commit on top of the merge."
+              spec_note="OpenAPI spec commit rejected (not a spec-only change); regenerate it manually"
+            fi
+          fi
+          echo "head=${head}" >> "$GITHUB_OUTPUT"
+          echo "spec_note=${spec_note}" >> "$GITHUB_OUTPUT"
+
+          result=$(head -c 10 "${RUNNER_TEMP}/tests/result" 2>/dev/null | tr -cd '[:lower:]' || true)
+          if [ "$result" = "passed" ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report test failure
+        if: steps.assemble.outputs.passed == 'false'
+        working-directory: sync
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          HEAD_SHA: ${{ steps.assemble.outputs.head }}
+        run: |
+          # Push the merge to a separate bot branch for inspection; the sync PR
+          # branch (if any) is left untouched.
+          failed_branch="${BRANCH}-tests-failed"
+          git push -q --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${HEAD_SHA}:refs/heads/${failed_branch}"
+
+          body="${RUNNER_TEMP}/issue.md"
+          {
+            echo "FastAPI tests fail after merging \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` (${TODAY})."
+            echo
+            cat "${RUNNER_TEMP}/merge/summary.md"
+            echo "- Result: \`$(head -c 200 "${RUNNER_TEMP}/tests/summary" 2>/dev/null | tr -d '`' || echo "no test results")\`"
+            echo "- Merged branch for inspection: \`${failed_branch}\`"
+            echo "- Run log: ${RUN_URL}"
+            echo
+            echo "Failing tests:"
+            echo '```'
+            head -n 50 "${RUNNER_TEMP}/tests/failures" 2>/dev/null | tr -d '`' || echo "(none listed; see the run log)"
+            echo '```'
+          } > "$body"
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/report_issue.sh"
+          report_issue tests-failed "Upstream sync: tests failing" "$body"
+
+      - name: Push and open PR
+        if: steps.assemble.outputs.passed == 'true'
+        working-directory: sync
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          HEAD_SHA: ${{ steps.assemble.outputs.head }}
+          SPEC_NOTE: ${{ steps.assemble.outputs.spec_note }}
+        run: |
+          remote="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if [ -n "$PR_NUMBER" ]; then
+            # Fast-forward the open PR's branch.
+            git push -q "$remote" "${HEAD_SHA}:refs/heads/${BRANCH}"
+          else
+            # New branch, named per upstream state; a leftover branch of the
+            # same name has no open PR and is safe to replace.
+            git push -q --force "$remote" "${HEAD_SHA}:refs/heads/${BRANCH}"
+          fi
+
+          summary=$(head -c 200 "${RUNNER_TEMP}/tests/summary" 2>/dev/null | tr -d '`' || echo "see run log")
+          body="${RUNNER_TEMP}/pr.md"
+          {
+            echo "Merges \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` into \`${BASE_BRANCH}\`."
+            echo
+            cat "${RUNNER_TEMP}/merge/summary.md"
+            echo "- FastAPI tests: \`${summary}\`"
+            echo "- ${SPEC_NOTE}"
+            echo "- Run: ${RUN_URL}"
+            echo
+            echo "Merged with a merge commit; fork commits are kept. Review and merge manually."
+            cat "${RUNNER_TEMP}/merge/review.md" 2>/dev/null || true
+          } > "$body"
+          title="Sync upstream presenton ${TODAY}"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "Updated with upstream \`${RANGE}\`. Tests: \`${summary}\`. Run: ${RUN_URL}"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$BRANCH" \
+              --title "$title" --body-file "$body"
+          fi
