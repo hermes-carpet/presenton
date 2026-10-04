@@ -15,14 +15,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
-COPY servers/fastapi /app/servers/fastapi
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /opt/venv/bin/python --no-deps .
 # mem0/spaCy BM25 lemmatization loads en_core_web_sm at runtime; spaCy tries pip to
 # download it otherwise. Runtime image has no pip in PATH (--without-pip venv).
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python \
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+
+# The backend project is not installed into the venv. A constant .pth file puts
+# /app/servers/fastapi on sys.path instead (same import order as an installed
+# package), so /opt/venv changes only with uv.lock and code-only updates don't
+# rewrite the venv layer.
+RUN echo /app/servers/fastapi > "$(/opt/venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/presenton-backend.pth"
+
+COPY servers/fastapi /app/servers/fastapi
 ENV HF_HOME=/root/.cache/huggingface \
     PRESENTON_FASTEMBED_ICON_CACHE_DIR=/root/.cache/presenton/fastembed-icons
 # Warm FastEmbed caches into the image (not a BuildKit cache mount, or HF weights would be missing).
@@ -118,28 +123,33 @@ RUN mkdir -p /app/scripts /app/servers/fastapi /app/servers/nextjs
 RUN mkdir -p /app_data/exports /app_data/images /app_data/uploads /app_data/fonts /app_data/templates /app_data/pptx-to-html /app_data/pptx-to-json \
     && chmod -R a+rX /app_data
 
-COPY --from=fastapi-builder /opt/venv /opt/venv
-COPY --from=fastapi-builder /app/servers/fastapi /app/servers/fastapi
-COPY --from=fastapi-builder /root/.cache/huggingface /root/.cache/huggingface
-COPY --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/presenton/fastembed-icons
-COPY templates /app/templates
+# Runtime copies use --link so each layer is reused whenever its own content is
+# unchanged, even if earlier layers changed (e.g. a Chromium bump or a backend
+# code update); pulls then only fetch what actually changed.
+COPY --link --from=fastapi-builder /opt/venv /opt/venv
+COPY --link --from=fastapi-builder /root/.cache/huggingface /root/.cache/huggingface
+COPY --link --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/presenton/fastembed-icons
+COPY --link templates /app/templates
 
-COPY --from=assets-builder /app/package.json /app/package.json
-COPY --from=assets-builder /app/document-extraction-liteparse /app/document-extraction-liteparse
-COPY --from=assets-builder /app/presentation-export /app/presentation-export
-COPY --from=assets-builder /app/scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
+COPY --link --from=assets-builder /app/package.json /app/package.json
+COPY --link --from=assets-builder /app/document-extraction-liteparse /app/document-extraction-liteparse
+COPY --link --from=assets-builder /app/presentation-export /app/presentation-export
+COPY --link --from=assets-builder /app/scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
 
 RUN test -f /app/presentation-export/runner.mjs \
     && test -f /app/presentation-export/node_modules/@presenton/export-core/dist/index.js
 
-COPY --from=nextjs-builder /app/servers/nextjs/.next-build/standalone/ /app/servers/nextjs/
-COPY --from=nextjs-builder /app/servers/nextjs/public /app/servers/nextjs/public
-COPY --from=nextjs-builder /app/servers/nextjs/.next-build/static /app/servers/nextjs/.next-build/static
+COPY --link --from=nextjs-builder /app/servers/nextjs/.next-build/standalone/ /app/servers/nextjs/
+COPY --link --from=nextjs-builder /app/servers/nextjs/public /app/servers/nextjs/public
+COPY --link --from=nextjs-builder /app/servers/nextjs/.next-build/static /app/servers/nextjs/.next-build/static
 
-COPY start.js LICENSE NOTICE ./
-COPY scripts/presenton-terminal-banner.mjs /app/scripts/presenton-terminal-banner.mjs
-COPY scripts/user-config-env.cjs /app/scripts/user-config-env.cjs
-COPY nginx.conf /etc/nginx/nginx.conf
+# Backend code changes most often; keep it near the end.
+COPY --link --from=fastapi-builder /app/servers/fastapi /app/servers/fastapi
+
+COPY --link start.js LICENSE NOTICE ./
+COPY --link scripts/presenton-terminal-banner.mjs /app/scripts/presenton-terminal-banner.mjs
+COPY --link scripts/user-config-env.cjs /app/scripts/user-config-env.cjs
+COPY --link nginx.conf /etc/nginx/nginx.conf
 
 EXPOSE 80
 CMD ["node", "/app/start.js"]

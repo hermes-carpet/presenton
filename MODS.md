@@ -43,12 +43,13 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 
 ## Upstream files touched
 
-| File | Change | On conflict |
-| --- | --- | --- |
-| `servers/fastapi/api/v1/ppt/router.py` | +1 import, +1 `include_router(CANVAS_ROUTER)` at the end | Take upstream, re-add both lines. |
-| `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` | Take upstream, re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
-| `servers/fastapi/tests/unit/test_mcp_server_auth.py` | +1 import; `test_mcp_tools_follow_presentation_generation_mode` asserts `expected_tools \| get_canvas_tool_names(generation_mode)` | Take upstream, re-add the import and the `\| get_canvas_tool_names(...)` on that assert. |
-| `servers/fastapi/openai_spec.json` | Regenerated; includes the canvas routes and every tool's input schema | Never hand-merge (one line). The upstream-sync workflow resolves a spec-only conflict and regenerates automatically. By hand: take either side, then regenerate (below). |
+| File | Change | Why | On conflict |
+| --- | --- | --- | --- |
+| `servers/fastapi/api/v1/ppt/router.py` | +1 import, +1 `include_router(CANVAS_ROUTER)` at the end | Hook for the mod. | Take upstream, re-add both lines. |
+| `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` | Hook for the mod. | Take upstream, re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
+| `servers/fastapi/tests/unit/test_mcp_server_auth.py` | +1 import; `test_mcp_tools_follow_presentation_generation_mode` asserts `expected_tools \| get_canvas_tool_names(generation_mode)` | Hook for the mod. | Take upstream, re-add the import and the `\| get_canvas_tool_names(...)` on that assert. |
+| `Dockerfile` | `fastapi-builder`: the backend project is no longer installed into `/opt/venv`; a constant `presenton-backend.pth` puts `/app/servers/fastapi` on `sys.path` instead (same import order). The spaCy model install moved above the code copy. Runtime: every `COPY` uses `--link`, and the backend code is copied last. | With upstream's Dockerfile, a code-only backend change rewrote 1,665 MB of layers (incl. the 930 MB venv). Now 65 MB (measured locally), so builds and server pulls after a mod or sync update are much smaller. | Take upstream, then re-apply these edits (they don't change runtime behavior). |
+| `servers/fastapi/openai_spec.json` | Regenerated; includes the canvas routes and every tool's input schema | MCP tools are built from this static file. | Never hand-merge (one line). The upstream-sync workflow resolves a spec-only conflict and regenerates automatically. By hand: take either side, then regenerate (below). |
 
 ### Regenerating `openai_spec.json`
 
