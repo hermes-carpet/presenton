@@ -4,7 +4,12 @@ FROM python:3.11-slim-trixie AS fastapi-builder
 
 WORKDIR /app/servers/fastapi
 
-ENV UV_LINK_MODE=copy
+# Fork: no implicit .pyc writes in the builder (e.g. setuptools'
+# _distutils_hack, imported at every interpreter start, would get a
+# timestamp-based pyc and make the venv differ between builds); compileall
+# below writes all bytecode explicitly and deterministically.
+ENV UV_LINK_MODE=copy \
+    PYTHONDONTWRITEBYTECODE=1
 
 RUN python -m venv --without-pip /opt/venv \
     && pip install --no-cache-dir uv
@@ -33,6 +38,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends binutils \
 # the venv is immutable. (A few vendored files with legacy syntax don't
 # compile; that is harmless.)
 RUN /opt/venv/bin/python -m compileall -q -j 0 --invalidation-mode unchecked-hash /opt/venv/lib >/dev/null || true
+
+# Fork: packages that change far more often than the rest of uv.lock live in
+# their own layer (/opt/venv-fast, found via a .pth file). llmai, Presenton's
+# own LLM client, changed in 14 of upstream's 37 lock updates, 13 of them alone.
+ARG FAST_MOVING_PACKAGES="llmai"
+RUN <<'PY' /opt/venv/bin/python
+import importlib.metadata, os, pathlib, shutil, sysconfig
+site = pathlib.Path(sysconfig.get_paths()["purelib"])
+dest = pathlib.Path("/opt/venv-fast/site-packages")
+dest.mkdir(parents=True, exist_ok=True)
+for name in os.environ.get("FAST_MOVING_PACKAGES", "").split():
+    dist = importlib.metadata.distribution(name)
+    for top in {pathlib.PurePath(f).parts[0] for f in dist.files if not str(f).startswith("..")}:
+        if (site / top).exists():
+            shutil.move(site / top, dest / top)
+(site / "presenton-fast-moving.pth").write_text(f"{dest}\n")
+PY
 
 # Fork: bake mem0's default embedding model into the image. mem0 creates
 # fastembed's TextEmbedding without a cache_dir, so fastembed uses
@@ -188,6 +210,13 @@ RUN set -eux; \
     # keeps OCR working offline instead of fetching models from a CDN.
     if [ "$INSTALL_TESSERACT" = "true" ]; then packages="$packages tesseract-ocr-eng"; fi; \
     apt-get update; \
+    # Fork: of fonts-noto-core keep Latin/Greek/Cyrillic (Sans, Serif, Mono),
+    # symbols and math; plus the emoji font.
+    printf '%s\n' 'path-exclude=/usr/share/fonts/truetype/noto/*' \
+    'path-include=/usr/share/fonts/truetype/noto/NotoSans-*' 'path-include=/usr/share/fonts/truetype/noto/NotoSerif-*' \
+    'path-include=/usr/share/fonts/truetype/noto/NotoSansMono-*' 'path-include=/usr/share/fonts/truetype/noto/NotoSansSymbols-*' \
+    'path-include=/usr/share/fonts/truetype/noto/NotoSansSymbols2-*' 'path-include=/usr/share/fonts/truetype/noto/NotoSansMath-*' \
+    'path-include=/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf' > /etc/dpkg/dpkg.cfg.d/presenton-fonts; \
     if [ "$TARGETARCH" = "amd64" ]; then \
     # Libraries chrome-headless-shell links (from ldd).
     apt-get install -y --no-install-recommends $packages \
@@ -244,14 +273,18 @@ RUN find /usr/share/fonts -type f ! -iname 'Noto*' -delete \
     && fc-cache -fsv
 
 # Fork: headless browser for exports. Fail the build if it can't resolve a
-# library, then render once so its bundled fontconfig writes its caches into
-# the image instead of into every container. Placed before any code-dependent
-# layer so it is rebuilt only with the browser or system packages.
+# library or start, then render once so its bundled fontconfig writes its
+# caches into the image instead of into every container. The render is
+# best-effort: Chromium's GPU process crashes under QEMU emulation (cross-arch
+# builds); the CI smoke test exercises real exports. Placed before any
+# code-dependent layer so it is rebuilt only with the browser or system
+# packages.
 COPY --link --from=assets-builder /opt/chrome-headless-shell /opt/chrome-headless-shell
 RUN ! ldd "$(readlink -f "$PUPPETEER_EXECUTABLE_PATH")" | grep "not found" \
     && "$PUPPETEER_EXECUTABLE_PATH" --version \
-    && "$PUPPETEER_EXECUTABLE_PATH" --no-sandbox --disable-gpu --dump-dom \
-    "data:text/html,<p style='font-family:sans-serif'>x &#10003; &#128640;</p>" >/dev/null \
+    && { "$PUPPETEER_EXECUTABLE_PATH" --no-sandbox --disable-gpu --dump-dom \
+    "data:text/html,<p style='font-family:sans-serif'>x &#10003; &#128640;</p>" >/dev/null 2>&1 \
+    || echo "warning: browser warm-up render failed; fontconfig caches will be built at runtime"; } \
     && rm -rf /tmp/* /root/.config /root/.cache/chromium /root/.pki
 
 RUN mkdir -p /app/scripts /app/servers/fastapi /app/servers/nextjs
@@ -262,6 +295,7 @@ RUN mkdir -p /app_data/exports /app_data/images /app_data/uploads /app_data/font
 # unchanged, even if earlier layers changed (e.g. a Chromium bump or a backend
 # code update); pulls then only fetch what actually changed.
 COPY --link --from=fastapi-builder /opt/venv /opt/venv
+COPY --link --from=fastapi-builder /opt/venv-fast /opt/venv-fast
 COPY --link --from=fastapi-builder /root/.cache/huggingface /root/.cache/huggingface
 COPY --link --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/presenton/fastembed-icons
 COPY --link --from=fastapi-builder /root/.cache/fastembed /root/.cache/fastembed
