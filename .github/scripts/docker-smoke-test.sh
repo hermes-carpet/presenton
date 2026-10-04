@@ -31,7 +31,7 @@ docker run -d --name "$name" -p "${port}:80" \
 
 mcp() {
   # $1: JSON-RPC body; prints response headers+body
-  curl -sS -i -X POST "${base}/mcp" \
+  curl -sS -i --max-time 30 -X POST "${base}/mcp" \
     -H "content-type: application/json" \
     -H "accept: application/json, text/event-stream" \
     ${session:+-H "mcp-session-id: ${session}"} \
@@ -69,7 +69,7 @@ echo "MCP lists the canvas tools."
 expect_status() {
   local expected=$1 path=$2 code=""
   for _ in $(seq 1 60); do
-    code=$(curl -sS -o /dev/null -w '%{http_code}' "${base}${path}" || true)
+    code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "${base}${path}" || true)
     [ "$code" = "$expected" ] && return 0
     [ "$code" = "502" ] || [ "$code" = "000" ] || break
     sleep 5
@@ -82,7 +82,7 @@ missing="00000000-0000-0000-0000-000000000000"
 expect_status 404 "/api/v1/ppt/canvas/presentation/${missing}/context"
 expect_status 200 "/"
 # Export: seed a Smart deck, save a slide through the canvas tool, then export.
-deck=$(docker exec -i -w / "$name" python - <<'PY'
+deck=$(timeout 120 docker exec -i -w / "$name" python - <<'PY'
 import asyncio
 from models.sql.presentation import PresentationModel, PresentationVersion
 from models.sql.slide import SlideModel
@@ -104,16 +104,16 @@ PY
 )
 deck=$(tail -n 1 <<<"$deck")
 html='<section data-slide-type=\"content\" data-slide-title=\"Smoke\" class=\"relative h-[720px] w-[1280px] overflow-hidden bg-white p-16\"><h2 class=\"text-5xl\">Smoke test ✓</h2></section>'
-code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+saved=$(curl -sS --max-time 60 -X POST \
   "${base}/api/v1/ppt/canvas/presentation/${deck}/tools/smartSaveSlide" \
   -H "content-type: application/json" \
-  -d "{\"html\":\"${html}\",\"index\":0,\"replaceOldSlideAtIndex\":true,\"speakerNote\":null,\"editPrompt\":null}")
-if [ "$code" != "200" ]; then
-  echo "smartSaveSlide returned ${code}"
+  -d "{\"html\":\"${html}\",\"index\":0,\"replaceOldSlideAtIndex\":true,\"speakerNote\":null,\"editPrompt\":null}" || true)
+if ! python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin)["result"]["saved"] is True else 1)' <<<"$saved" 2>/dev/null; then
+  echo "smartSaveSlide did not save: ${saved}"
   exit 1
 fi
 for format in pdf pptx; do
-  response=$(curl -sS -X POST "${base}/api/v1/ppt/presentation/${deck}/export" \
+  response=$(curl -sS --max-time 300 -X POST "${base}/api/v1/ppt/presentation/${deck}/export" \
     -H "content-type: application/json" -d "{\"export_as\":\"${format}\"}")
   path=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("path", ""))' <<<"$response" 2>/dev/null || true)
   if [ -z "$path" ] || ! docker exec "$name" test -s "$path"; then
@@ -125,7 +125,8 @@ done
 
 # OCR: document extraction must work without network access, using the
 # bundled language data (no CDN download).
-ocr=$(docker run --rm --network none --entrypoint sh "$image" -c '
+# shellcheck disable=SC2016 # expanded by the container's shell
+ocr=$(timeout 300 docker run --rm --network none --entrypoint sh "$image" -c '
   font=$(find /usr/share/fonts -name "NotoSans-Regular.ttf" | head -1)
   magick -size 900x200 xc:white -font "$font" -pointsize 56 -fill black \
     -annotate +30+120 "Quarterly OCR test 2026" /tmp/ocr.png
@@ -139,7 +140,8 @@ fi
 echo "Offline OCR OK."
 
 # mem0: its default embedding model must be baked into the image.
-embedding=$(docker run --rm --network none --entrypoint sh "$image" -c '
+# shellcheck disable=SC2016 # expanded by the container's shell
+embedding=$(timeout 300 docker run --rm --network none --entrypoint sh "$image" -c '
   cd /app/servers/fastapi && python -c "
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.embeddings.fastembed import FastEmbedEmbedding

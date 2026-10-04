@@ -1,13 +1,15 @@
-# Builds this fork's image and publishes it to ghcr.io/<owner>/<repo> with the
-# tags latest, <version> (from package.json, e.g. 0.9.11; no "v", no
-# pre-release suffix) and sha-<commit>, as a multi-arch manifest. Runs after
+# Builds this fork's image (Dockerfile.fork) and publishes it to
+# ghcr.io/<owner>/<repo> as a multi-arch manifest tagged latest, <version>
+# (package.json version without "v" or pre-release suffix, e.g. 0.9.11),
+# <full version> (e.g. 0.9.11-beta) and sha-<commit>. Runs after
 # "Test All Applications" passes on main, or manually.
 #
 # Each architecture builds and is smoke-tested natively (web UI, canvas API,
 # MCP through nginx, PDF/PPTX export, offline OCR and mem0), then pushed by
-# digest. amd64 is required: nothing is published unless it passes. arm64 is
-# best-effort (native ubuntu-24.04-arm runner): if it fails, the tags are
-# published amd64-only, with a warning and an upstream-sync issue comment.
+# digest (untagged) and checked to have exactly the tested image's layers.
+# The tags are published only if amd64 passed. arm64 is best-effort (native
+# ubuntu-24.04-arm runner): if it fails, the tags are published amd64-only,
+# with a warning and an upstream-sync issue comment.
 #
 # Upstream's docker-release.yml is left untouched; it targets
 # ghcr.io/presenton/presenton and never triggers in this fork (it runs on
@@ -48,6 +50,7 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
       version: ${{ steps.meta.outputs.version }}
+      full_version: ${{ steps.meta.outputs.full_version }}
       short_sha: ${{ steps.meta.outputs.short_sha }}
     steps:
       - name: Checkout tested commit
@@ -60,19 +63,21 @@ jobs:
       - name: Compute image name and version
         id: meta
         run: |
-          version=$(node -p "require('./package.json').version")
-          version=${version#v}
-          version=${version%%-*}
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Unexpected package.json version: ${version}"
+          full_version=$(node -p "require('./package.json').version")
+          full_version=${full_version#v}
+          version=${full_version%%-*}
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || ! [[ "$full_version" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Unexpected package.json version: ${full_version}"
             exit 1
           fi
           {
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
             echo "version=${version}"
+            echo "full_version=${full_version}"
             echo "short_sha=${SOURCE_SHA:0:7}"
           } >> "$GITHUB_OUTPUT"
-          echo "Tags: latest, ${version}, sha-${SOURCE_SHA:0:7}"
+          echo "Tags: latest, ${version}, ${full_version}, sha-${SOURCE_SHA:0:7}"
 
   build:
     name: Build and smoke-test (${{ matrix.arch }})
@@ -118,6 +123,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile.fork
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: ${{ env.SMOKE_TAG }}
@@ -132,7 +138,12 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile.fork
           platforms: linux/${{ matrix.arch }}
+          # Plain image manifest (no attestation index), so its layers can be
+          # compared with the tested image below.
+          provenance: false
+          sbom: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -141,6 +152,23 @@ jobs:
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
           # Registry cache: no 10 GB limit like the GitHub Actions cache.
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+
+      - name: Verify the pushed image is the tested one
+        id: verify
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # The push re-runs the build from cache; require exactly the same
+          # filesystem layers as the image the smoke test ran.
+          tested=$(docker image inspect "$SMOKE_TAG" --format '{{json .RootFS.Layers}}' | jq -c .)
+          pushed=$(docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --format '{{json .Image.RootFS.DiffIDs}}' | jq -c .)
+          if [ "$tested" != "$pushed" ]; then
+            echo "::error::Pushed image ${DIGEST} differs from the smoke-tested image."
+            echo "tested: ${tested}"
+            echo "pushed: ${pushed}"
+            exit 1
+          fi
+          echo "Pushed ${DIGEST} has the tested image's $(jq length <<<"$tested") layers."
 
       - name: Save digest
         env:
@@ -166,6 +194,7 @@ jobs:
             build=${{ steps.build.outcome }}
             smoke-test=${{ steps.smoke.outcome }}
             push=${{ steps.push.outcome }}
+            verify=${{ steps.verify.outcome }}
         run: |
           failed=unknown
           for pair in $OUTCOMES; do
@@ -190,6 +219,7 @@ jobs:
     env:
       IMAGE: ${{ needs.meta.outputs.image }}
       VERSION: ${{ needs.meta.outputs.version }}
+      FULL_VERSION: ${{ needs.meta.outputs.full_version }}
       SHORT_SHA: ${{ needs.meta.outputs.short_sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -245,7 +275,8 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # REFS is a space-separated list
           docker buildx imagetools create \
-            -t "${IMAGE}:latest" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:sha-${SHORT_SHA}" \
+            -t "${IMAGE}:latest" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${FULL_VERSION}" \
+            -t "${IMAGE}:sha-${SHORT_SHA}" \
             $REFS
           docker buildx imagetools inspect "${IMAGE}:sha-${SHORT_SHA}"
 
@@ -253,7 +284,7 @@ jobs:
         if: steps.platforms.outputs.arm64_ok == 'false'
         run: |
           step=$(cat "${RUNNER_TEMP}/failures/arm64" 2>/dev/null || echo "unknown (job cancelled or timed out)")
-          message="arm64 image failed at step '${step}'; published latest, ${VERSION} and sha-${SHORT_SHA} as amd64-only."
+          message="arm64 image failed at step '${step}'; published latest, ${VERSION}, ${FULL_VERSION} and sha-${SHORT_SHA} as amd64-only."
           echo "::warning::${message}"
           {
             echo "### arm64 not published"
