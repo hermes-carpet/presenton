@@ -34,6 +34,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends binutils \
 # compile; that is harmless.)
 RUN /opt/venv/bin/python -m compileall -q -j 0 --invalidation-mode unchecked-hash /opt/venv/lib >/dev/null || true
 
+# Fork: bake mem0's default embedding model into the image. mem0 creates
+# fastembed's TextEmbedding without a cache_dir, so fastembed uses
+# FASTEMBED_CACHE_PATH, else /tmp/fastembed_cache; upstream's warm-up wrote it
+# there in the builder only, so every container downloaded it at runtime.
+# Done before the code copy, so this layer only changes with uv.lock.
+ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python -c "from fastembed import TextEmbedding; next(TextEmbedding(model_name='BAAI/bge-small-en-v1.5').embed(['warmup']))" \
+    && rm -rf /root/.cache/huggingface/xet/logs
+
 # The backend project is not installed into the venv. A constant .pth file puts
 # /app/servers/fastapi on sys.path instead (same import order as an installed
 # package), so /opt/venv changes only with uv.lock and code-only updates don't
@@ -163,7 +172,8 @@ ENV APP_DATA_DIRECTORY=/app_data \
     NODE_ENV=production \
     START_OLLAMA=false \
     PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell \
-    LITEPARSE_TESSDATA_PATH=/usr/share/tessdata
+    LITEPARSE_TESSDATA_PATH=/usr/share/tessdata \
+    FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 
 RUN set -eux; \
     printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot; \
@@ -254,6 +264,7 @@ RUN mkdir -p /app_data/exports /app_data/images /app_data/uploads /app_data/font
 COPY --link --from=fastapi-builder /opt/venv /opt/venv
 COPY --link --from=fastapi-builder /root/.cache/huggingface /root/.cache/huggingface
 COPY --link --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/presenton/fastembed-icons
+COPY --link --from=fastapi-builder /root/.cache/fastembed /root/.cache/fastembed
 COPY --link templates /app/templates
 
 COPY --link --from=assets-builder /app/package.json /app/package.json
