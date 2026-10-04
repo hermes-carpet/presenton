@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 import mcp_server
+from mcp_canvas import get_canvas_tool_names
 from models.sql.user import User
 
 
@@ -374,4 +375,4 @@ def test_mcp_tools_follow_presentation_generation_mode(
             server = mcp_server.create_mcp_server(client)
             return {tool.name for tool in await server.list_tools()}
 
-    assert asyncio.run(list_tool_names()) == expected_tools
+    assert asyncio.run(list_tool_names()) == expected_tools | get_canvas_tool_names(generation_mode)

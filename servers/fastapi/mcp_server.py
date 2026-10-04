@@ -26,6 +26,7 @@ from services.api_keys import API_KEY_PREFIX, verify_api_key
 from api.v1.auth.config import SESSION_COOKIE_NAME
 from api.v1.auth.users import get_jwt_strategy
 from utils.mcp_public_urls import MCP_REQUEST_HEADER
+from mcp_canvas import MCP_CANVAS_TOOL_NAMES, get_canvas_instructions, get_canvas_route_maps
 
 OPENAPI_SPEC_PATH = Path(__file__).with_name("openai_spec.json")
 MCP_API_BASE_URL = "http://127.0.0.1:8000"
@@ -109,6 +110,7 @@ MCP_TOOL_NAMES = {
     "mcp_files_upload": "upload_files",
     "check_async_task_status_api_v1_async_tasks_status__id__get": "get_job_status",
 }
+MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)
 
 def get_mcp_route_maps(
     generation_mode: PresentationGenerationMode,
@@ -121,6 +123,7 @@ def get_mcp_route_maps(
     if generation_mode in {"both", "smart"}:
         route_maps.extend(MCP_SMART_ROUTE_MAPS)
     route_maps.extend(MCP_SHARED_ROUTE_MAPS)
+    route_maps.extend(get_canvas_route_maps(generation_mode))
     route_maps.append(RouteMap(mcp_type=MCPType.EXCLUDE))
     return route_maps
 
@@ -276,6 +279,7 @@ Claim success only after a tool reports completed or an immediate listing/upload
 returns the required fields. Give the user the relevant exported path, edit path, or
 template preview URL. Keep internal task details brief unless troubleshooting is needed.
 """
+    instructions += get_canvas_instructions(generation_mode)
     return instructions
 
 with OPENAPI_SPEC_PATH.open("r", encoding="utf-8") as f:
