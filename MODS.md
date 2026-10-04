@@ -47,10 +47,18 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 
 | File | Purpose |
 | --- | --- |
-| `.github/workflows/upstream-sync.yml` | Daily merge of upstream `main` into a sync PR, in two jobs: a read-only `merge` job that merges, regenerates `openai_spec.json` and runs the FastAPI tests; and a `publish` job, the only one holding `UPSTREAM_SYNC_TOKEN` (environment secret), which never runs merged code and pushes, opens PRs or files `upstream-sync` issues. The PR lists upstream workflow changes, changes to watched files, and upstream's Dockerfile diff to port into `Dockerfile.fork`. |
-| `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`, builds `Dockerfile.fork` natively on amd64 and arm64 (`ubuntu-24.04-arm`). Each architecture is smoke-tested and pushed by digest; the job then checks that the pushed manifest has exactly the tested image's layers. It publishes one manifest tagged `latest`, `<version>`, `<full version>` and `sha-<commit>`. Tags are gated on amd64; a failed arm64 publishes them amd64-only and warns on the `upstream-sync` issue. |
+| `.github/workflows/upstream-sync.yml` | Daily merge of upstream `main` into a sync PR, in two jobs: a read-only `merge` job that merges, regenerates `openai_spec.json` and runs the FastAPI tests; and a `publish` job, the only one holding `UPSTREAM_SYNC_TOKEN` (environment secret), which never runs merged code and pushes, opens PRs or files `upstream-sync` issues. **If upstream changed anything under `.github/`, nothing is pushed** until you review it and re-run the workflow with `reviewed_upstream_sha`, because a push made with the PAT would run those workflow changes with this repo's secrets. The PR lists upstream workflow changes, changes to watched files, and upstream's Dockerfile diff to port into `Dockerfile.fork`. |
+| `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`, builds `Dockerfile.fork` natively on amd64 and arm64 (`ubuntu-24.04-arm`). Each architecture is smoke-tested and pushed by digest; the job then checks that the pushed manifest has exactly the tested image's layers. It publishes one manifest tagged `latest`, `<version>`, `<full version>` and `sha-<commit>`. Tags are gated on amd64; a failed arm64 publishes them amd64-only and warns on the `upstream-sync` issue. Manual runs on branches other than `main` publish only `sha-<commit>`. |
 | `.github/scripts/docker-smoke-test.sh` | Smoke test through nginx: MCP handshake and canvas tools, canvas API, web UI, PDF/PPTX export, offline OCR, offline mem0 embedding. |
 | `docker-compose.fork.yml` | Runs the published image on a server: no repo checkout, `.env` passthrough, healthcheck. |
+
+### Owner setup for the fork CI
+
+1. **Sync token:** create a fine-grained PAT for this repo with Contents, Workflows, Pull requests and Issues read/write. Store it as the secret `UPSTREAM_SYNC_TOKEN` of an `upstream-sync` environment (Settings → Environments) with deployment branches limited to `main`, not as a repository secret.
+2. **Actions settings:** under Settings → Actions → General, set Workflow permissions to "Read repository contents and packages permissions", and allow GitHub Actions to create and approve pull requests.
+3. **Disable upstream's release workflows** in the Actions tab: `docker-release.yml` (releases, manual dispatch; targets upstream's registry), `sync-releaes-to-r2.yml` (releases) and `electron-linux-ubuntu22.yml` (its branch, manual dispatch). GitHub lists a fork's workflow only after a trigger has fired, so disable each one once it appears. Disabling is a repo setting and survives merges.
+4. **Reviewing upstream `.github/` changes:** when the `upstream-sync` issue says workflow changes need review, check them on the compare link. Then run **Upstream sync** manually with `reviewed_upstream_sha` set to the listed upstream commit, and disable any new workflow that doesn't apply after merging the sync PR.
+5. **Image visibility:** after the first image push, make the `presenton` package public, or log in to `ghcr.io` on the server.
 
 ## `Dockerfile.fork`
 
