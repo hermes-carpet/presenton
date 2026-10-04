@@ -93,9 +93,27 @@ COPY scripts/run-presentation-export.mjs /app/scripts/run-presentation-export.mj
 RUN rm -rf /app/presentation-export \
     && node /app/scripts/sync-presentation-export.cjs --force
 
-# Fork: no source maps, type definitions or sharp's wasm fallback at runtime.
+# Fork: no source maps, type definitions or sharp's wasm fallback at runtime;
+# LiteParse runs from dist/, so drop its src/ copy and tests. tesseract.js in
+# Node loads tesseract-core-*.js + .wasm; *.wasm.js are inlined browser builds.
 RUN find /app/presentation-export /app/document-extraction-liteparse -type f \( -name "*.map" -o -name "*.d.ts" \) -delete \
-    && rm -rf /app/presentation-export/node_modules/@img/sharp-wasm32 /app/document-extraction-liteparse/node_modules/@img/sharp-wasm32
+    && rm -rf /app/presentation-export/node_modules/@img/sharp-wasm32 /app/document-extraction-liteparse/node_modules/@img/sharp-wasm32 \
+    && rm -rf /app/document-extraction-liteparse/node_modules/@llamaindex/liteparse/src \
+    && find /app/document-extraction-liteparse/node_modules/@llamaindex/liteparse/dist -name "*.test.js" -delete \
+    && cd /app/document-extraction-liteparse/node_modules/tesseract.js-core \
+    && rm -f ./*.wasm.js
+
+# Fork: LiteParse and Next.js often pin the same sharp/libvips; when the
+# package versions match, LiteParse links to Next.js's copy instead of
+# shipping a second one (~17 MB).
+COPY --from=nextjs-builder /app/nextjs-node_modules/@img /tmp/nextjs-img
+RUN for src in /tmp/nextjs-img/sharp-libvips-*; do \
+    name=$(basename "$src"); dest=/app/document-extraction-liteparse/node_modules/@img/$name; \
+    if [ -d "$dest" ] && cmp -s "$src/package.json" "$dest/package.json"; then \
+    rm -rf "$dest" && ln -s "/app/servers/nextjs/node_modules/@img/$name" "$dest"; \
+    fi; \
+    done; \
+    rm -rf /tmp/nextjs-img
 
 # Fork: chrome-headless-shell at exactly the version the export runtime's
 # puppeteer pins. Chrome for Testing publishes Linux x64 only; arm64 images use
@@ -132,7 +150,8 @@ ENV APP_DATA_DIRECTORY=/app_data \
     PATH="/opt/venv/bin:${PATH}" \
     NODE_ENV=production \
     START_OLLAMA=false \
-    PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell
+    PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell \
+    LITEPARSE_TESSDATA_PATH=/usr/share/tessdata
 
 RUN set -eux; \
     printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot; \
@@ -142,7 +161,10 @@ RUN set -eux; \
     # use their own web fonts.
     packages="ca-certificates curl nginx fontconfig imagemagick zstd \
     fonts-noto-core fonts-noto-color-emoji"; \
-    if [ "$INSTALL_TESSERACT" = "true" ]; then packages="$packages tesseract-ocr tesseract-ocr-eng"; fi; \
+    # Fork: LiteParse OCRs with tesseract.js (WASM), not the tesseract binary; it
+    # only needs the language data (LITEPARSE_TESSDATA_PATH below), which also
+    # keeps OCR working offline instead of fetching models from a CDN.
+    if [ "$INSTALL_TESSERACT" = "true" ]; then packages="$packages tesseract-ocr-eng"; fi; \
     apt-get update; \
     if [ "$TARGETARCH" = "amd64" ]; then \
     # Libraries chrome-headless-shell links (from ldd).
@@ -173,6 +195,14 @@ RUN set -eux; \
     fi; \
     # Upstream's docker-compose.yml sets PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium.
     ln -s /usr/local/bin/chrome-headless-shell /usr/bin/chromium; \
+    if [ "$INSTALL_TESSERACT" = "true" ]; then \
+    ln -s "$(dirname "$(find /usr/share/tesseract-ocr -name eng.traineddata | head -1)")" /usr/share/tessdata; \
+    fi; \
+    # Fork: Node runtime only; headers (~56 MB) and npm/corepack are unused in
+    # production (start.js runs npm only with --dev).
+    printf '%s\n' 'path-exclude=/usr/include/node/*' 'path-exclude=/usr/lib/node_modules/npm/*' \
+    'path-exclude=/usr/lib/node_modules/corepack/*' 'path-exclude=/usr/bin/npm' 'path-exclude=/usr/bin/npx' \
+    'path-exclude=/usr/bin/corepack' > /etc/dpkg/dpkg.cfg.d/presenton-node-runtime; \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
     # Fork: Node ships with debug info (~17 MB).
