@@ -40,20 +40,49 @@ RUN apt-get update && apt-get install -y --no-install-recommends binutils \
 RUN /opt/venv/bin/python -m compileall -q -j 0 --invalidation-mode unchecked-hash /opt/venv/lib >/dev/null || true
 
 # Fork: packages that change far more often than the rest of uv.lock live in
-# their own layer (/opt/venv-fast, found via a .pth file). llmai, Presenton's
-# own LLM client, changed in 14 of upstream's 37 lock updates, 13 of them alone.
-ARG FAST_MOVING_PACKAGES="llmai"
+# small per-group layers under /opt/venv-fast/<group> (each added to sys.path
+# by a .pth file), so their updates don't re-ship the large venv layer. Groups
+# come from upstream's lock history (37 updates): llmai, Presenton's own LLM
+# client (14 changes, mostly alone); the document stack that bumps together;
+# the MCP stack. Missing packages are skipped with a warning. The runtime stage
+# copies each group listed here, so keep the group names in sync.
+ARG FAST_MOVING_GROUPS="llmai:llmai docs:lxml,python-pptx,xlsxwriter,fonttools mcp:fastmcp,fastmcp-slim,mcp,mcp-types,httpx2,httpcore2,starlette,truststore,uncalled-for,idna"
+# sympy (and mpmath) are installed only as onnxruntime's dependency for its
+# offline model tools; nothing at runtime imports them (~50 MB).
+ARG REMOVE_PACKAGES="sympy mpmath"
 RUN <<'PY' /opt/venv/bin/python
 import importlib.metadata, os, pathlib, shutil, sysconfig
 site = pathlib.Path(sysconfig.get_paths()["purelib"])
-dest = pathlib.Path("/opt/venv-fast/site-packages")
-dest.mkdir(parents=True, exist_ok=True)
-for name in os.environ.get("FAST_MOVING_PACKAGES", "").split():
-    dist = importlib.metadata.distribution(name)
-    for top in {pathlib.PurePath(f).parts[0] for f in dist.files if not str(f).startswith("..")}:
-        if (site / top).exists():
-            shutil.move(site / top, dest / top)
-(site / "presenton-fast-moving.pth").write_text(f"{dest}\n")
+
+def contents(name):
+    """Installed files and top-level dirs of a distribution (read before changes)."""
+    try:
+        dist = importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        print(f"warning: {name} is not installed; skipped")
+        return [], set()
+    records = list(dist.files or [])
+    tops = {pathlib.PurePath(f).parts[0] for f in records if not str(f).startswith("..")}
+    return [pathlib.Path(dist.locate_file(f)) for f in records], tops
+
+for name in os.environ.get("REMOVE_PACKAGES", "").split():
+    paths, tops = contents(name)
+    for path in paths:
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+    for top in tops:
+        shutil.rmtree(site / top, ignore_errors=True)
+
+for group in os.environ.get("FAST_MOVING_GROUPS", "").split():
+    group_name, packages = group.split(":", 1)
+    dest = pathlib.Path("/opt/venv-fast") / group_name / "site-packages"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in packages.split(","):
+        _, tops = contents(name)
+        for top in tops:
+            if (site / top).exists():
+                shutil.move(site / top, dest / top)
+    (site / f"presenton-fast-{group_name}.pth").write_text(f"{dest}\n")
 PY
 
 # Fork: bake mem0's default embedding model into the image. mem0 creates
@@ -295,7 +324,9 @@ RUN mkdir -p /app_data/exports /app_data/images /app_data/uploads /app_data/font
 # unchanged, even if earlier layers changed (e.g. a Chromium bump or a backend
 # code update); pulls then only fetch what actually changed.
 COPY --link --from=fastapi-builder /opt/venv /opt/venv
-COPY --link --from=fastapi-builder /opt/venv-fast /opt/venv-fast
+COPY --link --from=fastapi-builder /opt/venv-fast/docs /opt/venv-fast/docs
+COPY --link --from=fastapi-builder /opt/venv-fast/mcp /opt/venv-fast/mcp
+COPY --link --from=fastapi-builder /opt/venv-fast/llmai /opt/venv-fast/llmai
 COPY --link --from=fastapi-builder /root/.cache/huggingface /root/.cache/huggingface
 COPY --link --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/presenton/fastembed-icons
 COPY --link --from=fastapi-builder /root/.cache/fastembed /root/.cache/fastembed
