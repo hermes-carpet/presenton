@@ -91,6 +91,7 @@ jobs:
             echo "branch=${branch}"
             echo "pr_number=${pr_number}"
             echo "upstream_sha=${upstream_sha}"
+            echo "base_sha=${base_sha}"
             echo "range=${base_sha:0:8}..${upstream_sha:0:8}"
             echo "compare_url=https://github.com/${UPSTREAM_REPO}/compare/${base_sha}...${upstream_sha}"
             echo "commit_count=$(git rev-list --count "${base_sha}..${upstream_sha}")"
@@ -292,8 +293,13 @@ jobs:
           SUMMARY: ${{ steps.tests.outputs.summary }}
           SPEC_STATUS: ${{ steps.spec.outputs.status }}
           SPEC_RESOLVED: ${{ steps.merge.outputs.spec_resolved }}
+          BASE_SHA: ${{ steps.upstream.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.upstream_sha }}
         run: |
           git push origin "HEAD:refs/heads/${BRANCH}"
+
+          # Upstream workflow changes take effect in this fork once merged.
+          workflow_changes=$(git diff --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github/workflows || true)
 
           spec_note="OpenAPI spec ${SPEC_STATUS}"
           if [ "$SPEC_RESOLVED" = "true" ]; then
@@ -310,6 +316,18 @@ jobs:
             echo "- Run: ${RUN_URL}"
             echo
             echo "Merged with a merge commit; fork commits are kept. Review and merge manually."
+            if [ -n "$workflow_changes" ]; then
+              echo
+              echo "### Upstream workflow changes (review before merging)"
+              echo
+              echo "These run in this fork once merged. Disable any that don't apply in the Actions tab after merging."
+              echo
+              while read -r status file; do
+                triggers=$(git show "${UPSTREAM_SHA}:${file}" 2>/dev/null \
+                  | sed -n '/^on:/,/^[a-z]/p' | grep -oE '^  [a-z_]+' | tr -d ' ' | paste -sd, - || true)
+                echo "- \`${status}\` \`${file}\`${triggers:+ (triggers: ${triggers})}"
+              done <<< "$workflow_changes"
+            fi
           } > "$body"
           title="Sync upstream presenton ${TODAY}"
           if [ -n "$PR_NUMBER" ]; then
