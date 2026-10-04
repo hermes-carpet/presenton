@@ -50,7 +50,25 @@ TEMPLATE_LAYOUT = {
                     ],
                 }
             ],
-        }
+        },
+        {
+            "id": "text",
+            "name": "Text",
+            "description": "Title only",
+            "components": [
+                {
+                    "id": "main",
+                    "elements": [
+                        {
+                            "type": "text",
+                            "name": "title",
+                            "decorative": False,
+                            "size": {"width": 400, "height": 50},
+                        }
+                    ],
+                }
+            ],
+        },
     ],
 }
 
@@ -262,6 +280,45 @@ def test_delete_last_slide_leaves_blank_fallback():
     assert response.json()["result"]["blank_fallback"] is True
 
 
+def test_rejected_tool_action_returns_422_and_changes_nothing():
+    presentation, slides = _standard_deck(2)
+
+    async def scenario(deck):
+        response = await _call_tool(deck, presentation, "deleteSlide", {"index": 5})
+        return response, await deck.slides(presentation.id), await deck.presentation(presentation.id)
+
+    response, stored, stored_presentation = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["result"]["deleted"] is False
+    assert "No slide found" in detail["result"]["message"]
+    assert [slide.id for slide in stored] == [slides[0].id, slides[1].id]
+    assert stored_presentation.n_slides == 2
+
+
+def test_add_new_slide_layout_keeps_n_slides_in_sync():
+    presentation, slides = _standard_deck(2)
+
+    async def scenario(deck):
+        response = await _call_tool(
+            deck,
+            presentation,
+            "addNewSlideLayout",
+            {"layoutId": "text", "index": 1, "content": {"main": {"title": "Inserted"}}},
+        )
+        return response, await deck.slides(presentation.id), await deck.presentation(presentation.id)
+
+    response, stored, stored_presentation = _run([presentation, *slides], scenario)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["saved"] is True
+    assert [slide.index for slide in stored] == [0, 1, 2]
+    assert stored[1].layout == "text"
+    assert stored[2].id == slides[1].id
+    assert stored_presentation.n_slides == 3
+
+
 def test_smart_save_slide_saves_html():
     presentation, slides = _smart_deck(1)
 
@@ -421,6 +478,7 @@ def test_mcp_tools_edit_a_deck_end_to_end():
     assert "hero" in json.dumps(layouts.structured_content)
     assert deleted.structured_content["result"]["deleted"] is True
     assert [slide.id for slide in stored] == [slides[1].id]
-    assert "No slide found" in json.dumps(failed.structured_content or failed.content[0].text)
+    assert failed.is_error
+    assert "No slide found" in failed.content[0].text
     assert rejected.is_error
     assert "get_presentation_context" in rejected.content[0].text

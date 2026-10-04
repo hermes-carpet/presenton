@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from llmai.shared import AssistantToolCall  # type: ignore[import-not-found]
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import func, select
 
 from models.sql.presentation import PresentationModel
 from models.sql.slide import SlideModel
@@ -46,6 +46,16 @@ you have over MCP. Differences for MCP clients:
 - There is no chat user; ignore instructions about the final chat reply and
   report results to your user instead. Share `edit_path` so they can open the deck.
 """
+
+
+# The assistant's tools report some rejections inside a successful result
+# (e.g. {"deleted": False, "message": "No slide found ..."}) rather than by
+# raising; treat those as failures too.
+REJECTION_KEYS = ("added", "deleted", "saved", "updated")
+
+
+def _is_rejection(result: object) -> bool:
+    return isinstance(result, dict) and any(result.get(key) is False for key in REJECTION_KEYS)
 
 
 def _deck_type(presentation: PresentationModel) -> DeckType:
@@ -218,11 +228,20 @@ async def _run_canvas_tool(
             arguments=json.dumps(arguments),
         )
     )
-    if not outcome.get("ok"):
+    if not outcome.get("ok") or _is_rejection(outcome.get("result")):
         await sql_session.rollback()
-        # Keep the assistant's error, repair notes and recovery guidance.
+        # Keep the assistant's error or rejection message, repair notes and
+        # recovery guidance.
         raise HTTPException(status_code=422, detail=outcome)
 
+    # Upstream's save_slide (addNewSlideLayout, saveSlide) inserts and shifts
+    # slides without updating n_slides; keep it in sync for every tool.
+    slide_count = await sql_session.scalar(
+        select(func.count()).select_from(SlideModel).where(SlideModel.presentation == presentation.id)
+    )
+    if presentation.n_slides != slide_count:
+        presentation.n_slides = slide_count
+        sql_session.add(presentation)
     await sql_session.commit()
     response = {"result": outcome.get("result"), "edit_path": _edit_path(presentation.id)}
     if outcome.get("repair"):
