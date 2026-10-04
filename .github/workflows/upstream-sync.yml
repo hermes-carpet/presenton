@@ -9,6 +9,11 @@
 # - publish: the only job with UPSTREAM_SYNC_TOKEN. It never runs merged code:
 #   it pushes the bundled commits and opens PRs/issues.
 #
+# A push made with the PAT runs the workflows of the pushed branch, so if
+# upstream changed anything under .github/, nothing is pushed until you have
+# reviewed it: the issue lists the changes, and you approve them by running
+# this workflow manually with reviewed_upstream_sha set to that upstream commit.
+#
 # UPSTREAM_SYNC_TOKEN: a fine-grained PAT for this repo with Contents,
 # Workflows, Pull requests and Issues read/write (GITHUB_TOKEN can't push
 # commits that touch .github/workflows/*). Store it as a secret of the
@@ -18,6 +23,13 @@ name: Upstream sync
 
 on:
   workflow_dispatch:
+    inputs:
+      reviewed_upstream_sha:
+        description: >-
+          Upstream commit whose .github/ changes you have reviewed (from the
+          upstream-sync issue). Required to push a merge that changes them.
+        required: false
+        default: ""
   schedule:
     - cron: "23 5 * * *"
 
@@ -52,6 +64,8 @@ jobs:
       today: ${{ steps.upstream.outputs.today }}
       range: ${{ steps.upstream.outputs.range }}
       merge_sha: ${{ steps.merge.outputs.merge_sha }}
+      upstream_sha: ${{ steps.upstream.outputs.upstream_sha }}
+      github_changes_blocked: ${{ steps.report.outputs.github_changes_blocked }}
     env:
       # Upstream files the fork modifies or builds on (see MODS.md). Changes to
       # them are listed in the sync PR for review even when they merge cleanly.
@@ -177,8 +191,10 @@ jobs:
           fi
 
       - name: Write merge report and bundle
+        id: report
         if: steps.upstream.outputs.new == 'true'
         env:
+          REVIEWED_SHA: ${{ inputs.reviewed_upstream_sha }}
           TODAY: ${{ steps.upstream.outputs.today }}
           RANGE: ${{ steps.upstream.outputs.range }}
           COMPARE_URL: ${{ steps.upstream.outputs.compare_url }}
@@ -215,6 +231,36 @@ jobs:
               echo "Nothing was pushed. Resolve with MODS.md as the checklist."
             } > "${out}/conflict.md"
             exit 0
+          fi
+
+          # Upstream changes under .github/ (workflows, actions) would run with
+          # this repo's secrets as soon as the merge is pushed, so they need a
+          # human review first.
+          github_changes=$(git diff --name-status "$BASE_SHA" "$UPSTREAM_SHA" -- .github || true)
+          blocked=false
+          if [ -n "$github_changes" ]; then
+            if [ ${#REVIEWED_SHA} -ge 7 ] && [ "${UPSTREAM_SHA#"$REVIEWED_SHA"}" != "$UPSTREAM_SHA" ]; then
+              echo "Upstream .github/ changes were reviewed up to ${UPSTREAM_SHA}; proceeding."
+            else
+              blocked=true
+            fi
+          fi
+          echo "github_changes_blocked=${blocked}" >> "$GITHUB_OUTPUT"
+          if [ "$blocked" = "true" ]; then
+            {
+              echo "Upstream changed files under \`.github/\` (${TODAY}). Nothing was pushed: a push would run these workflow changes with this repo's secrets before review."
+              echo
+              echo "Upstream range: [\`${RANGE}\`](${COMPARE_URL}) (${COMMIT_COUNT} commits)"
+              echo
+              echo "Changed files:"
+              while read -r status file; do
+                triggers=$(git show "${UPSTREAM_SHA}:${file}" 2>/dev/null \
+                  | sed -n '/^on:/,/^[a-z]/p' | grep -oE '^  [a-z_]+' | tr -d ' ' | paste -sd, - || true)
+                echo "- \`${status}\` \`${file}\`${triggers:+ (triggers: ${triggers})}"
+              done <<< "$github_changes"
+              echo
+              echo "After reviewing them (compare link above), run the **Upstream sync** workflow manually with \`reviewed_upstream_sha\` = \`${UPSTREAM_SHA}\`. Disable any new workflow that doesn't apply to this fork in the Actions tab after merging."
+            } > "${out}/github-changes.md"
           fi
 
           # Reports for the PR body (git only; no upstream code has run yet).
@@ -353,6 +399,7 @@ jobs:
       TODAY: ${{ needs.merge.outputs.today }}
       RANGE: ${{ needs.merge.outputs.range }}
       MERGE_SHA: ${{ needs.merge.outputs.merge_sha }}
+      UPSTREAM_SHA: ${{ needs.merge.outputs.upstream_sha }}
     steps:
       - name: Check token
         env:
@@ -377,32 +424,57 @@ jobs:
           name: sync-tests
           path: ${{ runner.temp }}/tests
 
-      - name: Ensure label exists
+      - name: Prepare issue reporting
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: |
           gh label create "$SYNC_LABEL" --repo "$GITHUB_REPOSITORY" --color 5319e7 \
             --description "Automated upstream sync needs attention" 2>/dev/null || true
+          # report_issue <kind> <title> <body-file>: comment on the open
+          # upstream-sync issue (or open one), once per kind and upstream commit.
+          cat > "${RUNNER_TEMP}/report_issue.sh" <<'SH'
+          report_issue() {
+            kind=$1; title=$2; body=$3
+            marker="<!-- upstream-sync:${kind}:${UPSTREAM_SHA} -->"
+            printf '\n%s\n' "$marker" >> "$body"
+            issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
+              --json number --jq '.[0].number // empty')
+            if [ -z "$issue" ]; then
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$SYNC_LABEL" --body-file "$body"
+            elif gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --comments --json body,comments \
+              --jq '[.body] + [.comments[].body] | join("\n")' | grep -qF "$marker"; then
+              echo "Already reported on issue #${issue}."
+            else
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+            fi
+          }
+          SH
+
+      - name: Report upstream .github changes awaiting review
+        if: needs.merge.outputs.github_changes_blocked == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/report_issue.sh"
+          body="${RUNNER_TEMP}/issue.md"
+          { cat "${RUNNER_TEMP}/merge/github-changes.md"; echo; echo "Run: ${RUN_URL}"; } > "$body"
+          report_issue github-changes "Upstream sync: workflow changes need review" "$body"
 
       - name: Report conflict
         if: needs.merge.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: |
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/report_issue.sh"
           body="${RUNNER_TEMP}/issue.md"
           { cat "${RUNNER_TEMP}/merge/conflict.md"; echo; echo "Run: ${RUN_URL}"; } > "$body"
-          issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
-            --json number --jq '.[0].number // empty')
-          if [ -n "$issue" ]; then
-            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "Upstream sync conflict" \
-              --label "$SYNC_LABEL" --body-file "$body"
-          fi
+          report_issue conflict "Upstream sync conflict" "$body"
 
       - name: Assemble the commits to push
         id: assemble
-        if: needs.merge.outputs.conflict == 'false'
+        if: needs.merge.outputs.conflict == 'false' && needs.merge.outputs.github_changes_blocked != 'true'
         run: |
           # Fetch the refs the bundle builds on, then the bundles themselves.
           # Nothing from the merged tree is executed in this job.
@@ -473,14 +545,9 @@ jobs:
             head -n 50 "${RUNNER_TEMP}/tests/failures" 2>/dev/null | tr -d '`' || echo "(none listed; see the run log)"
             echo '```'
           } > "$body"
-          issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "$SYNC_LABEL" \
-            --json number --jq '.[0].number // empty')
-          if [ -n "$issue" ]; then
-            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "Upstream sync: tests failing" \
-              --label "$SYNC_LABEL" --body-file "$body"
-          fi
+          # shellcheck source=/dev/null
+          . "${RUNNER_TEMP}/report_issue.sh"
+          report_issue tests-failed "Upstream sync: tests failing" "$body"
 
       - name: Push and open PR
         if: steps.assemble.outputs.passed == 'true'
