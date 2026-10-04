@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start a Presenton image and check, through nginx (the way a remote MCP client
 # reaches it): the MCP handshake and canvas tools, the canvas API, the web UI,
-# and PDF/PPTX export with the bundled headless browser. The MCP URL is
+# PDF/PPTX export with the bundled headless browser, and offline OCR. The MCP URL is
 # /mcp without a trailing slash (/mcp/ redirects to an internal address).
 # Usage: docker-smoke-test.sh <image> [host-port]
 set -euo pipefail
@@ -121,5 +121,20 @@ for format in pdf pptx; do
   fi
   echo "${format} export OK."
 done
+
+# OCR: document extraction must work without network access, using the
+# bundled language data (no CDN download).
+ocr=$(docker run --rm --network none --entrypoint sh "$image" -c '
+  font=$(find /usr/share/fonts -name "NotoSans-Regular.ttf" | head -1)
+  magick -size 900x200 xc:white -font "$font" -pointsize 56 -fill black \
+    -annotate +30+120 "Quarterly OCR test 2026" /tmp/ocr.png
+  cd /app/servers/fastapi && python -c "
+from services.liteparse_service import LiteParseService
+print(LiteParseService().parse_to_markdown(\"/tmp/ocr.png\"))"' 2>&1 | tail -n 5)
+if ! grep -q "Quarterly OCR test 2026" <<<"$ocr"; then
+  echo "Offline OCR failed: ${ocr}"
+  exit 1
+fi
+echo "Offline OCR OK."
 
 echo "Smoke test passed."
