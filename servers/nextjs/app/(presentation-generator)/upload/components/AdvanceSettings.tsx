@@ -1,3 +1,6 @@
+"use client";
+
+import Image from "next/image";
 import ToolTip from '@/components/ToolTip';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -99,14 +102,7 @@ const AdvanceSettings = ({
                         )}
                         data-testid="advanced-settings-button"
                     >
-                        <SlidersHorizontal
-                            className={cn(
-                                compact
-                                    ? "h-3.5 w-3.5"
-                                    : "h-3.5 w-3.5 min-[1800px]:h-4 min-[1800px]:w-4 min-[2200px]:h-5 min-[2200px]:w-5"
-                            )}
-                            aria-hidden="true"
-                        />
+                        {compact ? <Image src="/generate/settings.svg" alt="" width={14} height={14} /> : <SlidersHorizontal aria-hidden="true" className="h-4 w-4" />}
                     </button>
                 </ToolTip>
             </div>

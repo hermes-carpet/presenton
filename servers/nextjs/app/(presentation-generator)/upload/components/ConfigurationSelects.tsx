@@ -1,12 +1,10 @@
+import Image from "next/image";
 import { LanguageType, PresentationConfig } from "../type";
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
-  ChevronDown,
-  ChevronRight,
   ChevronUp,
   Languages,
-  Monitor,
 } from "lucide-react";
 import {
   Command,
@@ -135,11 +133,7 @@ const SlideCountSelect: React.FC<{
           )}
         >
           {compact ? (
-            <Monitor
-              aria-hidden="true"
-              strokeWidth={1.75}
-              className="h-3.5 w-3.5 shrink-0"
-            />
+            <Image src="/generate/slides.svg" alt="" width={14} height={14} />
           ) : (
             <svg
               className="h-3.5 w-3.5 min-[1800px]:h-4 min-[1800px]:w-4 min-[2200px]:h-5 min-[2200px]:w-5"
@@ -172,18 +166,14 @@ const SlideCountSelect: React.FC<{
             <span
               className={cn(
                 compact
-                  ? "text-xs font-semibold tracking-[-0.12px]"
+                  ? "text-sm font-medium tracking-[-0.14px]"
                   : "text-xs font-medium min-[1800px]:text-sm min-[2200px]:text-base",
               )}
             >
               {compact && value ? `Slides ${value}` : displayLabel}
             </span>
             {compact && (
-              <ChevronUp
-                aria-hidden="true"
-                strokeWidth={1.75}
-                className="h-3.5 w-3.5 shrink-0 rotate-90"
-              />
+              <Image src="/generate/chevron-right.svg" alt="" width={14} height={14} className="rotate-90" />
             )}
           </span>
           {!compact && (
@@ -298,16 +288,7 @@ const LanguageSelect: React.FC<{
             : "shadow-sm ring-1 ring-inset ring-slate-200 min-[1800px]:h-10 min-[1800px]:max-w-[190px] min-[1800px]:px-4 min-[2200px]:h-11 min-[2200px]:max-w-[220px] min-[2200px]:px-5",
         )}
       >
-        <Languages
-          aria-hidden="true"
-          strokeWidth={compact ? 1.75 : 2}
-          className={cn(
-            "shrink-0",
-            compact
-              ? "h-3.5 w-3.5"
-              : "h-3.5 w-3.5 min-[1800px]:h-4 min-[1800px]:w-4 min-[2200px]:h-5 min-[2200px]:w-5",
-          )}
-        />
+        {compact ? <Image src="/generate/language.svg" alt="" width={14} height={14} /> : <Languages aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
         <span
           className={cn(
             "flex min-w-0 flex-1 items-center",
@@ -318,18 +299,14 @@ const LanguageSelect: React.FC<{
             className={cn(
               "truncate",
               compact
-                ? "text-xs font-semibold tracking-[-0.12px]"
+                ? "text-sm font-medium tracking-[-0.14px]"
                 : "text-xs font-medium min-[1800px]:text-sm min-[2200px]:text-base",
             )}
           >
-            {value || "Select language"}
+            {value === LanguageType.Auto ? "Auto (English)" : value || "Select language"}
           </span>
           {compact && (
-            <ChevronUp
-              aria-hidden="true"
-              strokeWidth={1.75}
-              className="h-3.5 w-3.5 shrink-0 rotate-90"
-            />
+            <Image src="/generate/chevron-right.svg" alt="" width={14} height={14} className="rotate-90" />
           )}
         </span>
         {!compact && (
@@ -393,7 +370,7 @@ export function ConfigurationSelects({
     <div
       className={cn(
         "order-1 flex flex-wrap items-center",
-        compact ? "gap-3" : "gap-4 min-[1800px]:gap-5",
+        compact ? "gap-2 sm:gap-3" : "gap-4 min-[1800px]:gap-5",
       )}
     >
       {showMode ? (
