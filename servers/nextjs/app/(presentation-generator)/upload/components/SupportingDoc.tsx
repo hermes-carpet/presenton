@@ -1,7 +1,9 @@
 "use client";
 
+import Image from "next/image";
+
 import type { ChangeEvent, DragEvent } from "react";
-import { ArrowUp, File, Paperclip, X } from "lucide-react";
+import { File, X } from "lucide-react";
 
 import { notify } from "@/components/ui/sonner";
 
@@ -106,12 +108,12 @@ export default function SupportingDoc({
       )}
 
       <div className="flex items-center justify-between gap-3">
-        <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-full px-2.5 font-manrope text-xs font-medium text-[#4C4C4C] transition hover:bg-[#F6F6F9]">
-          <Paperclip className="h-3.5 w-3.5" />
-          <span>{files.length ? `Attach more (${files.length})` : "Attach files"}</span>
+        <label className={`relative inline-flex h-[34px] w-[42px] items-center justify-center rounded-full border border-[#EDEEEF] bg-white transition hover:bg-[#F6F6F9] focus-within:ring-2 focus-within:ring-[#7A5AF8] ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}>
+          <Image src="/generate/paperclip.svg" alt="" width={14} height={14} />
+          <span className="sr-only">{files.length ? `Attach more (${files.length})` : "Attach files"}</span>
           <input
             type="file"
-            className="hidden"
+            className="absolute inset-0 w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
             accept={ACCEPT}
             multiple={multiple}
             disabled={disabled}
@@ -125,9 +127,9 @@ export default function SupportingDoc({
           onClick={onSubmit}
           disabled={disabled}
           aria-label="Generate presentation"
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-[#7A5AF8] text-white shadow-sm transition hover:bg-[#6938EF] disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-10 w-[60px] items-center justify-center rounded-full bg-[#7A5AF8] text-white shadow-sm transition hover:bg-[#6938EF] disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <ArrowUp className="h-4 w-4" strokeWidth={2} />
+          <Image src="/generate/submit-arrow.svg" alt="" width={16} height={16} />
         </button>
       </div>
     </div>
