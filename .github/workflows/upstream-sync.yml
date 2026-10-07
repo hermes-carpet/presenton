@@ -15,6 +15,8 @@
 # this workflow manually with reviewed_upstream_sha set to that upstream
 # commit's full SHA.
 #
+# A separate token-expiry job opens one issue 14 days before the PAT expires.
+#
 # UPSTREAM_SYNC_TOKEN: a fine-grained PAT for this repo with Contents,
 # Workflows, Pull requests and Issues read/write (GITHUB_TOKEN can't push
 # commits that touch .github/workflows/*). Store it as a secret of the
@@ -51,6 +53,55 @@ env:
   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
+  token-expiry:
+    name: Warn before the sync token expires
+    if: github.repository != 'presenton/presenton'
+    runs-on: ubuntu-latest
+    environment: upstream-sync
+    permissions: {}
+    steps:
+      - name: Open an issue 14 days before expiry
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          WARN_DAYS: "14"
+        run: |
+          # A missing token is reported by the publish job.
+          [ -n "$GH_TOKEN" ] || exit 0
+          # GitHub returns a fine-grained PAT's expiry on every API response.
+          expiry=$(gh api -i "repos/${GITHUB_REPOSITORY}" | tr -d '\r' \
+            | sed -n 's/^github-authentication-token-expiration: //Ip' | head -n 1)
+          if [ -z "$expiry" ]; then
+            echo "The token has no expiry date."
+            exit 0
+          fi
+          if ! expiry_epoch=$(date -u -d "$expiry" +%s); then
+            echo "Could not parse the token expiry: ${expiry}"
+            exit 0
+          fi
+          days_left=$(( (expiry_epoch - $(date -u +%s)) / 86400 ))
+          echo "The token expires ${expiry} (${days_left} days)."
+          if [ "$days_left" -gt "$WARN_DAYS" ]; then
+            exit 0
+          fi
+
+          # One issue per expiry date, also if it was closed.
+          expiry_date=$(date -u -d "@${expiry_epoch}" +%F)
+          title="Upstream sync token expires on ${expiry_date}"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --search "\"${title}\" in:title" \
+            --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
+            | awk -F '\t' -v t="$title" '$2 == t { print $1; exit }')
+          if [ -n "$existing" ]; then
+            echo "Already reported in #${existing}."
+            exit 0
+          fi
+          body="${RUNNER_TEMP}/issue.md"
+          {
+            echo "The \`UPSTREAM_SYNC_TOKEN\` PAT used by the **Upstream sync** workflow expires on ${expiry} (${days_left} days)."
+            echo
+            echo "Create a new fine-grained PAT for this repository (Contents, Workflows, Pull requests and Issues: read and write) and replace the \`UPSTREAM_SYNC_TOKEN\` secret of the \`upstream-sync\` environment (Settings → Environments)."
+          } > "$body"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body"
+
   merge:
     name: Merge upstream and test (read-only)
     if: github.repository != 'presenton/presenton'
