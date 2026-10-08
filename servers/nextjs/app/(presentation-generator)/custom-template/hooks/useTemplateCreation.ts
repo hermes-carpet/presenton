@@ -313,7 +313,6 @@ export const useTemplateCreation = () => {
                 duration_ms: Date.now() - startedAt,
             });
 
-            notify.success("Document prepared", "Template generation is starting now.");
             return data;
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : "Document preparation failed";

@@ -554,6 +554,12 @@ def _count_layouts(layouts_json: Any) -> int:
     return 0
 
 
+def _explicit_template_generation_options(request: InitTemplateRequest) -> dict[str, Any]:
+    if "generation_options" not in request.model_fields_set:
+        return {}
+    return {"generation_options": request.generation_options.model_dump(mode="json")}
+
+
 def _template_generation_options(
     template: TemplateV2,
     override: LayoutGenerationOptions | None = None,
@@ -1283,7 +1289,7 @@ async def init_template(
         raw_layouts=raw_layouts_json,
         layouts=None,
         assets={
-            "generation_options": request.generation_options.model_dump(mode="json"),
+            **_explicit_template_generation_options(request),
             "pptx_url": request.pptx_url,
             "icon_type": icon_type,
             "icon_weight": icon_type,
@@ -1339,7 +1345,7 @@ def _build_created_template(
             else None
         ),
         assets={
-            "generation_options": request.generation_options.model_dump(mode="json"),
+            **_explicit_template_generation_options(request),
             "icon_type": icon_type,
             "icon_weight": icon_type,
             "fonts": available_fonts,
@@ -1586,7 +1592,10 @@ async def create_template(
         type=ASYNC_TASK_TYPE_TEMPLATE_CREATE,
         status=AsyncTaskStatus.PENDING,
         message="Queued for template creation",
-        payload=request.model_dump(mode="json"),
+        payload={
+            **request.model_dump(mode="json", exclude={"generation_options"}),
+            **_explicit_template_generation_options(request),
+        },
     )
     task.data = _template_task_progress_data(
         created_layouts=0,
