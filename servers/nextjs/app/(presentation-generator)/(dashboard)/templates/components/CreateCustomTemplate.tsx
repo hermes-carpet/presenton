@@ -5,12 +5,16 @@ import { Plus, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { trackEvent, MixpanelEvent } from "@/utils/mixpanel";
 import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui/card";
+import { TemplateLibraryPattern } from "./TemplateLibraryUi";
 
 const CreateCustomTemplate = ({
   selectionPage = false,
+  libraryPage = false,
   onClick,
 }: {
   selectionPage?: boolean;
+  libraryPage?: boolean;
   onClick?: () => void;
 }) => {
     const router = useRouter();
@@ -20,6 +24,20 @@ const CreateCustomTemplate = ({
         onClick?.();
         router.push("/custom-template");
     };
+
+    if (libraryPage) {
+      return (
+        <Card className="relative h-full min-w-0 overflow-hidden rounded-[10px] border-0 bg-[#F8FBFB] shadow-none after:pointer-events-none after:absolute after:inset-0 after:rounded-[10px] after:border after:border-[#EDEEEF] after:transition-colors hover:after:border-[#D8D3FA]">
+          <button type="button" onClick={handleOpenTemplateBuilder} className="relative flex h-full min-h-[268px] w-full items-center justify-center overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#7A5AF8]">
+            <TemplateLibraryPattern />
+            <span className="relative flex flex-col items-center gap-2.5 p-2.5">
+              <span className="flex items-center justify-center rounded-full bg-[#7A5AF8] p-1"><Plus aria-hidden="true" className="h-3.5 w-3.5 text-white" /></span>
+              <span className="font-manrope text-sm font-semibold leading-[19px] tracking-[0.14px] text-[#191919]">Create New Template</span>
+            </span>
+          </button>
+        </Card>
+      );
+    }
 
     return (
         <div
