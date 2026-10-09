@@ -25,10 +25,12 @@ export function TemplateThumbnailPreview({
   thumbnail,
   templateName,
   selectionPage = false,
+  flush = false,
 }: {
   thumbnail?: string | null;
   templateName: string;
   selectionPage?: boolean;
+  flush?: boolean;
 }) {
   const resolvedThumbnail = thumbnail ? resolveBackendAssetUrl(thumbnail) : "";
 
@@ -55,7 +57,9 @@ export function TemplateThumbnailPreview({
       <div
         aria-label={`${templateName} thumbnail`}
         className={cn(
-          "h-full w-full rounded-[12px] border border-[#EDEEEF] bg-white bg-contain bg-center bg-no-repeat",
+          "h-full w-full bg-white bg-no-repeat",
+          flush ? "bg-cover bg-left-top" : "bg-contain bg-center",
+          !flush && "rounded-[12px] border border-[#EDEEEF]",
           !selectionPage && "shadow-sm"
         )}
         role="img"
@@ -366,10 +370,21 @@ export function TemplateListSection({
 export function TemplateTabSwitcher({
   tab,
   onTabChange,
+  libraryPage = false,
 }: {
   tab: TemplateTab;
   onTabChange: (tab: TemplateTab) => void;
+  libraryPage?: boolean;
 }) {
+  if (libraryPage) {
+    return (
+      <div role="group" aria-label="Template type" className="flex h-9 w-[180px] shrink-0 items-center rounded-lg border border-[#EDEEEF] bg-white p-[3px] font-manrope">
+        {([{ value: "default", label: "Built-In" }, { value: "custom", label: "Custom" }] as const).map((item) => (
+          <button key={item.value} type="button" aria-pressed={tab === item.value} onClick={() => onTabChange(item.value)} className={cn("flex h-7 flex-1 items-center justify-center rounded-lg text-[13px] font-medium leading-6 text-[#191919] outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/30", tab === item.value ? "bg-[#F6F6F9]" : "hover:bg-[#F9FAFB]")}>{item.label}</button>
+        ))}
+      </div>
+    );
+  }
   return (
     <div className="p-1 rounded-[40px] bg-[#ffffff] w-fit border border-[#EDEEEF] flex items-center justify-center">
       <button

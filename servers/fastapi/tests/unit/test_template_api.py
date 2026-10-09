@@ -412,7 +412,6 @@ def test_create_template_converts_generates_and_persists(tmp_path, fake_async_se
     assert template.layouts == expected_layouts
     assert template.theme == GENERATED_THEME_DATA
     assert template.assets == {
-        "generation_options": LayoutGenerationOptions().model_dump(),
         "icon_type": "bold",
         "icon_weight": "bold",
         "fonts": {"Inter": "Inter"},
@@ -579,7 +578,6 @@ def test_create_template_async_enqueues_task(fake_async_session):
     assert task.status == "pending"
     assert task.message == "Queued for template creation"
     assert task.payload == {
-        "generation_options": LayoutGenerationOptions().model_dump(),
         "pptx_url": "/app_data/uploads/template.pptx",
         "slide_image_urls": ["/app_data/images/slide-1.png"],
         "fonts": {},
@@ -895,7 +893,6 @@ def test_init_template_persists_assets_without_layouts(tmp_path, fake_async_sess
     assert template.raw_layouts == _normalized_raw_layouts()
     assert template.layouts is None
     assert template.assets == {
-        "generation_options": LayoutGenerationOptions().model_dump(),
         "pptx_url": "/app_data/uploads/quarterly-review.pptx",
         "icon_type": "bold",
         "icon_weight": "bold",

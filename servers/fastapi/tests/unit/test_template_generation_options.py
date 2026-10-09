@@ -3,7 +3,7 @@ from itertools import product
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -153,6 +153,28 @@ def test_create_persists_and_forwards_options(monkeypatch, fake_async_session):
     init_id = asyncio.run(api.init_template(api.InitTemplateRequest.model_validate(request.model_dump()), fake_async_session))
     assert fake_async_session.added[-1].id == init_id
     assert fake_async_session.added[-1].assets["generation_options"] == options.model_dump()
+
+
+@pytest.mark.parametrize("supplied_options", [None, {}, {"text_growth": False}])
+def test_async_creation_serializes_only_explicit_options(
+    monkeypatch, fake_async_session, supplied_options,
+):
+    payload = {"pptx_url": "/deck.pptx", "slide_image_urls": ["/slide.png"]}
+    if supplied_options is not None:
+        payload["generation_options"] = supplied_options
+    request = api.CreateTemplateRequest.model_validate(payload)
+    monkeypatch.setattr(api, "resolve_app_path_to_filesystem", lambda _url: __file__)
+    task = asyncio.run(api.create_template(BackgroundTasks(), request, fake_async_session))
+
+    assert "import_settings" not in task.payload
+    assert "import_settings" not in api.CreateTemplateRequest.model_json_schema()["properties"]
+    if supplied_options is None:
+        assert "generation_options" not in task.payload
+    else:
+        assert task.payload["generation_options"] == request.generation_options.model_dump()
+    restored = api.CreateTemplateRequest.model_validate(task.payload)
+    assert restored.generation_options == request.generation_options
+    assert ("generation_options" in restored.model_fields_set) is (supplied_options is not None)
 
 
 def test_layout_route_uses_saved_options_and_partial_override(monkeypatch, fake_async_session):

@@ -517,6 +517,20 @@ def test_generate_slide_layout_runs_focused_passes(monkeypatch):
     assert layout.components[1].elements[0].type == "grid"
 
 
+def test_disabled_visual_replacement_keeps_nested_original_image():
+    image = generation.SlideImageElement.model_validate({
+        "type": "image", "position": {"x": 0, "y": 0},
+        "size": {"width": 100, "height": 100},
+        "data": "/app_data/original.png", "decorative": False,
+        "name": "photo", "is_icon": False,
+    })
+    group = _raw_layout().elements[1]
+    group.children.append(image)
+    generation._replace_content_image_url_in_element(group, replace_visuals=False)
+    assert image.data == "/app_data/original.png"
+    assert image.decorative is True
+
+
 def test_text_capacity_failure_preserves_flexible_layout(monkeypatch):
     manifest = _manifest()
     flexible_plan = _flexible_plan()

@@ -10,7 +10,6 @@ import React, {
 } from "react";
 import { useRouter } from "next/navigation";
 import {
-  AlertTriangle,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -54,6 +53,8 @@ import { MixpanelEvent, trackEvent } from "@/utils/mixpanel";
 
 import { useFontLoader as loadFontAssets } from "../hooks/useFontLoad";
 import TemplateService from "../services/api/template";
+import GenerateHeader from "../upload/components/GenerateHeader";
+import { AttachmentButton, ContinueButton, ProcessingStatus, TemplateCreationTitle, UploadIllustration } from "./components/TemplateCreationChrome";
 import { ensureTailwindBrowserScript } from "@/lib/tailwind-browser";
 import { TemplateV2LayoutPreview } from "./components/EachSlide/TemplateV2LayoutPreview";
 import { useFileUpload } from "./hooks/useFileUpload";
@@ -73,19 +74,9 @@ import {
 
 
 
-type StudioStep = 1 | 2 | 3 | 4;
+type StudioStep = 1 | 2 | 3;
 
-
-
-const studioSteps: { id: StudioStep; label: string }[] = [
-  { id: 1, label: "Upload" },
-  { id: 2, label: "Analyze" },
-  { id: 3, label: "Preview" },
-  { id: 4, label: "Review" },
-];
-
-const pillGradient =
-  "linear-gradient(270deg, #D5CAFC 2.4%, #E3D2EB 27.88%, #F4DCD3 69.23%, #FDE4C2 100%)";
+const pillGradient = "#7A5AF8";
 
 const FONT_FALLBACK_OPTION_HEIGHT = 40;
 const FONT_FALLBACK_MAX_VISIBLE_ROWS = 7;
@@ -103,66 +94,14 @@ function formatFileSize(size: number): string {
 function activeStudioStep(step: TemplateCreationStep): StudioStep {
   if (step === "font-check" || step === "font-upload") return 2;
   if (step === "slides-preview") return 3;
-  if (step === "template-creation" || step === "completed") return 4;
+  if (step === "template-creation" || step === "completed") return 3;
   return 1;
 }
 
-function StudioTopBar({ activeStep }: { activeStep: StudioStep }) {
+function StudioBottomAction({ children, wide = false }: { children: React.ReactNode; wide?: boolean }) {
   return (
-    <header className="pointer-events-none fixed inset-x-0 top-0 z-40 h-[72px] sm:h-[80px] 2xl:h-[96px] bg-gradient-to-b from-white via-white to-white/0">
-      <div className="relative mx-auto flex h-full max-w-[1280px] 2xl:max-w-[1536px] items-center justify-between px-5 sm:px-8 2xl:px-[90px]">
-        <a
-          href="/dashboard"
-          className="pointer-events-auto block h-8 w-8 sm:h-[34px] sm:w-[34px] 2xl:h-[44px] 2xl:w-[44px] shrink-0"
-          aria-label="Dashboard"
-        >
-          <img
-            src="/logo-with-bg.png"
-            alt="Presenton"
-            className="h-full w-full"
-            draggable={false}
-          />
-        </a>
-
-        <nav
-          className="pointer-events-auto flex items-center"
-          aria-label="Template Studio progress"
-        >
-          {studioSteps.map((step, index) => {
-            const isActive = step.id === activeStep;
-            return (
-              <React.Fragment key={step.id}>
-                <div className="flex items-center gap-1 sm:gap-1.5 2xl:gap-2">
-                  <span
-                    className={`flex h-5 w-5 sm:h-6 sm:w-6 2xl:h-7 2xl:w-7 items-center justify-center rounded-full border text-[10px] sm:text-[11px] 2xl:text-xs leading-none ${isActive
-                      ? "border-black bg-black text-white"
-                      : "border-[#E4E5EB] bg-white text-[#9B9CA3]"
-                      }`}
-                  >
-                    {step.id}
-                  </span>
-                  <span
-                    className={`hidden text-[10px] font-medium sm:inline sm:text-[11px] 2xl:text-xs ${isActive ? "text-black" : "text-[#9B9CA3]"}`}
-                  >
-                    {step.label}
-                  </span>
-                </div>
-                {index < studioSteps.length - 1 ? (
-                  <span className="mx-1.5 sm:mx-2 2xl:mx-2.5 h-px w-3 sm:w-[18px] 2xl:w-[22px] bg-[#E9EAF0]" />
-                ) : null}
-              </React.Fragment>
-            );
-          })}
-        </nav>
-      </div>
-    </header>
-  );
-}
-
-function StudioBottomAction({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-5 sm:bottom-6 2xl:bottom-8 z-30 flex justify-center px-4">
-      <div className="pointer-events-auto w-full max-w-[260px] sm:max-w-[300px] 2xl:max-w-[380px]">
+    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-30 flex justify-center px-4">
+      <div className={`pointer-events-auto w-full ${wide ? "max-w-[545px]" : "max-w-[260px] sm:max-w-[300px] 2xl:max-w-[380px]"}`}>
         {children}
       </div>
     </div>
@@ -191,7 +130,7 @@ function GradientPillButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex ${fullWidth ? "w-full" : ""} h-10 items-center justify-center gap-2 rounded-[58px] px-5 text-sm font-medium text-black shadow-none transition disabled:cursor-not-allowed ${isMuted
+      className={`inline-flex ${fullWidth ? "w-full" : ""} h-10 items-center justify-center gap-2 rounded-[12px] px-5 text-base font-medium text-white shadow-none transition disabled:cursor-not-allowed ${isMuted
         ? "bg-[#ECECF1] text-[#5C5E68] disabled:opacity-100"
         : "disabled:opacity-60"
         } ${className}`}
@@ -202,29 +141,8 @@ function GradientPillButton({
   );
 }
 
-function TemplateStudioTitle({ compact = false }: { compact?: boolean }) {
-  return (
-    <div
-      className={`px-4 text-center ${compact ? "pt-[88px] sm:pt-[96px] 2xl:pt-[112px]" : "pt-[96px] sm:pt-[108px] 2xl:pt-[128px]"}`}
-    >
-      <h1 className="font-syne text-[36px] font-normal leading-none tracking-[-1.2px] text-[#101323] sm:text-[48px] sm:tracking-[-1.4px] md:text-[56px] 2xl:text-[68px] 2xl:tracking-[-1.8px]">
-        Template Studio
-      </h1>
-      <p className="mx-auto mt-3 max-w-[480px] text-center font-syne text-[15px] font-normal leading-[1.4] text-[#101323CC] sm:mt-4 sm:max-w-[520px] sm:text-[16px] 2xl:mt-5 2xl:max-w-[600px] 2xl:text-[18px]">
-        Upload your PPTX file to extract slides and convert them to a template
-        which you can use to generate AI presentations.
-      </p>
-    </div>
-  );
-}
-
 function UploadPanel({
-  selectedFile,
-  isProcessing,
-  onFileInput,
-  onFileDrop,
-  onRemove,
-  onStart,
+  selectedFile, isProcessing, onFileInput, onFileDrop, onRemove, onStart,
 }: {
   selectedFile: File | null;
   isProcessing: boolean;
@@ -234,157 +152,37 @@ function UploadPanel({
   onStart: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const dropInputRef = useRef<HTMLInputElement | null>(null);
-
-  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const file = event.dataTransfer.files?.[0];
-    if (file) onFileDrop(file);
-  };
-
-  const handleGetStarted = () => {
-    if (!selectedFile) {
-      inputRef.current?.click();
-      return;
-    }
-    onStart();
-  };
+  const [isDragging, setIsDragging] = useState(false);
+  const chooseFile = () => inputRef.current?.click();
 
   return (
-    <main className="flex min-h-screen flex-col items-center bg-white font-syne">
-      <TemplateStudioTitle />
-
-      <section className="mt-8 w-full max-w-[640px] px-4 sm:mt-10 sm:max-w-[700px] 2xl:mt-12 2xl:max-w-[820px]">
-        <div className="group relative">
-          <div className="relative z-10 ml-8 2xl:ml-10 w-max rounded-t-[28px] 2xl:rounded-t-[32px] border border-b-0 border-[#EDEEF4] bg-white px-3 2xl:px-4 pb-2.5 2xl:pb-3 pt-2 2xl:pt-2.5">
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              className="flex h-[34px] 2xl:h-[42px] items-center gap-1.5 2xl:gap-2 rounded-[80px] bg-white px-3.5 2xl:px-4 text-[12px] 2xl:text-sm font-semibold text-black shadow-[0_0_4px_rgba(0,0,0,0.06)]"
-            >
-              <Upload className="h-3.5 w-3.5 2xl:h-4 2xl:w-4 text-[#7A5AF8]" />
-              Upload PPTX File
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".pptx"
-              className="hidden"
-              onChange={onFileInput}
-            />
-          </div>
-
-          <div className="relative -mt-px rounded-[28px] 2xl:rounded-[32px] border border-[#EDEEF4] bg-white p-2.5 2xl:p-3 shadow-[0_0_16px_rgba(80,71,230,0.08)] transition-shadow duration-200 ">
-            <div
-              className={`relative h-[120px] 2xl:h-[150px] overflow-hidden rounded-[18px] 2xl:rounded-[22px] border border-[#E8E8EF] bg-white ${selectedFile ? "" : "cursor-pointer"
-                }`}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={handleDrop}
-              onClick={() => {
-                if (!selectedFile) dropInputRef.current?.click();
-              }}
-            >
-              <input
-                ref={dropInputRef}
-                type="file"
-                accept=".pptx"
-                onChange={onFileInput}
-                className="hidden"
-              />
-
-              {selectedFile ? (
-                <div className="relative flex h-full items-center ">
-                  <div
-                    className="flex  flex-1 h-full min-w-0 items-center rounded-[14px] bg-[#F6F6FA] px-5 transition-[width] duration-300"
-
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-base 2xl:text-lg font-medium text-[#20212A]">
-                        {selectedFile.name}
-                      </p>
-                      <p className="mt-2 2xl:mt-2.5 text-sm 2xl:text-base text-[#777985]">
-                        {isProcessing ? (
-                          "Processing..."
-                        ) : (
-                          <>
-                            {formatFileSize(selectedFile.size)}
-                            <span className="px-2">•</span>
-                            Ready
-                          </>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="w-[64px] 2xl:w-[76px] h-full flex justify-center items-center px-3.5">
-
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onRemove();
-                      }}
-                      disabled={isProcessing}
-                      className="w-[36px] h-[36px] 2xl:w-[44px] 2xl:h-[44px] top-1/2 z-20 flex items-center justify-center rounded-full border border-[#E8E8EF] bg-[#EFF0F4] text-black disabled:opacity-50"
-                      aria-label="Remove file"
-                    >
-                      <X className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" />
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex h-full flex-col py-[28px] 2xl:py-[36px] items-center justify-center">
-                  <img
-                    src="/upload_icon.png"
-                    alt=""
-                    className="h-[42px] w-[55px] 2xl:h-[52px] 2xl:w-[68px]"
-                    draggable={false}
-                  />
-                  <p className="mt-3 2xl:mt-4 text-sm 2xl:text-base font-normal text-[#808080]">
-                    Drag &amp; Drop your files here
-                  </p>
-                </div>
-              )}
+    <main className="mx-auto mt-7 w-full max-w-[742px] px-4 pb-12 font-syne">
+      <section aria-label="Upload PowerPoint" aria-busy={isProcessing} className="rounded-xl border border-[#DBDBDB99] bg-white px-[9px] py-[11px] shadow-[0_4px_12px_rgba(0,0,0,0.08)]">
+        <input ref={inputRef} type="file" accept=".pptx" aria-label="PowerPoint file" className="hidden" disabled={isProcessing} onChange={(event) => { onFileInput(event); event.target.value = ""; }} />
+        <div
+          className={`relative flex h-[127px] items-center overflow-hidden rounded-[10px] ${isDragging ? "bg-[#F3EFFF] ring-2 ring-[#7A5AF8]" : "bg-[#F9F9FA]"}`}
+          onDragOver={(event) => { event.preventDefault(); if (!isProcessing) setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={(event) => { event.preventDefault(); setIsDragging(false); const file = event.dataTransfer.files?.[0]; if (file && !isProcessing) onFileDrop(file); }}
+        >
+          {selectedFile ? <>
+            <div className="flex h-full min-w-0 flex-1 flex-col justify-center gap-2.5 bg-[#F6F6F9] pl-5">
+              <p className="truncate text-base text-[#191919]">{selectedFile.name}</p>
+              <p className="text-xs text-[#666] [font-family:var(--font-manrope)]">{formatFileSize(selectedFile.size)}<span className="px-2">·</span>{isProcessing ? "Processing" : "Ready"}</p>
             </div>
-
-            <div className="mt-3 flex items-center justify-end gap-3 px-1">
-              <GradientPillButton
-                onClick={handleGetStarted}
-                disabled={isProcessing}
-                className="h-9 px-5 text-xs font-semibold"
-              >
-                {isProcessing ? "Processing" : "Get Started"}
-                {isProcessing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5" />
-                )}
-              </GradientPillButton>
+            <div className="flex h-full w-[62px] shrink-0 items-center justify-center rounded-lg border-4 border-[#F6F6F9] bg-white">
+              <button type="button" onClick={onRemove} disabled={isProcessing} aria-label="Remove file" className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F6F6F9] focus-visible:ring-2 focus-visible:ring-[#7A5AF8] disabled:opacity-50"><img src="/custom-template/processing-imgFrame.svg" alt="" /></button>
             </div>
+          </> : <button type="button" onClick={chooseFile} className="flex h-full w-full flex-col items-center justify-center gap-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#7A5AF8]"><UploadIllustration /><span className="text-sm text-[#808080]">Drag &amp; Drop your files here</span></button>}
+        </div>
+        <div className="mt-2.5 flex items-center justify-between gap-3">
+          <AttachmentButton onClick={chooseFile} disabled={isProcessing} />
+          <div className="flex items-center gap-3.5">
+            {isProcessing && <ProcessingStatus label="Processing..." />}
+            <ContinueButton onClick={selectedFile ? onStart : chooseFile} disabled={isProcessing} label={selectedFile ? "Analyze PowerPoint" : "Choose PowerPoint file"} />
           </div>
         </div>
-
-        <ul className="mx-auto mt-6 2xl:mt-8 flex max-w-[480px] 2xl:max-w-[600px] items-center justify-between gap-5 2xl:gap-8">
-          {["Test in Real Time", "Max 100MB", "5min Generation"].map((item) => (
-            <li key={item} className="flex items-center gap-2 2xl:gap-2.5">
-              <span className="h-2.5 w-2.5 2xl:h-3 2xl:w-3 rounded-full bg-[#EBE9FE]" />
-              <span className="text-[13px] 2xl:text-[15px] font-normal text-[#3A3A3A]">{item}</span>
-            </li>
-          ))}
-        </ul>
       </section>
-
-      <div className="mt-auto w-full pb-5 2xl:pb-8 pt-12 2xl:pt-16">
-        <div className="mx-auto flex max-w-[558px] 2xl:max-w-[700px] items-center gap-2 2xl:gap-3 rounded-[6px] bg-[#F4F7FB] px-3 2xl:px-4 py-2 2xl:py-2.5 text-[11px] 2xl:text-[13px] leading-tight text-[#505462]">
-          <span className="flex h-[14px] w-[14px] 2xl:h-4 2xl:w-4 shrink-0 items-center justify-center rounded-full bg-[#0B4FBD] text-[10px] 2xl:text-[11px] font-bold text-white">
-            i
-          </span>
-          <p>
-            Presenton sends each slide as a screenshot and HTML reference. Use a
-            vision-enabled model for accurate layouts. Text-only models may produce
-            poor results or fail.
-          </p>
-        </div>
-      </div>
     </main>
   );
 }
@@ -631,6 +429,7 @@ function AnalyzePanel({
   onLoadLocalFontOptions,
   onContinue,
   isAutoContinuing = false,
+  onReplaceFile,
 }: {
   fontsData: FontData | null;
   uploadedFonts: UploadedFont[];
@@ -642,6 +441,7 @@ function AnalyzePanel({
   onLoadLocalFontOptions: () => void;
   onContinue: () => void;
   isAutoContinuing?: boolean;
+  onReplaceFile: () => void;
 }) {
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [resolvingFont, setResolvingFont] = useState<FontItem | null>(null);
@@ -652,33 +452,6 @@ function AnalyzePanel({
   );
 
   const uploadedFontNames = new Set(uploadedFonts.map((font) => font.fontName));
-  const pendingMissingCount = missingFonts.filter(
-    (font) => !uploadedFontNames.has(font.name),
-  ).length;
-  const allFontsAvailable = Boolean(fontsData) && missingFonts.length === 0;
-  const allMissingFontsResolved =
-    missingFonts.length > 0 && pendingMissingCount === 0;
-  const fontAnalysisNotice = fontsData
-    ? allFontsAvailable
-      ? {
-        tone: "success",
-        title: "All fonts are available",
-        description: "Preparing the slide preview automatically.",
-      }
-      : allMissingFontsResolved
-        ? {
-          tone: "success",
-          title: "Missing fonts resolved",
-          description: "All required font files are attached. Continue to preview.",
-        }
-        : {
-          tone: "warning",
-          title: `${pendingMissingCount} font${pendingMissingCount === 1 ? "" : "s"} need attention`,
-          description:
-            "Upload exact font files or keep the selected fallback fonts before continuing.",
-        }
-    : null;
-
   const handleFontFile = (fontName: string, event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -694,69 +467,11 @@ function AnalyzePanel({
     : undefined;
 
   return (
-    <main className="flex min-h-screen flex-col bg-white px-4 pb-28 font-syne sm:px-6 sm:pb-32 2xl:px-10 2xl:pb-36">
-      <TemplateStudioTitle compact />
-      <section className="mx-auto mt-8 w-full max-w-[600px] sm:mt-10 2xl:mt-12 2xl:max-w-[900px]">
-
-
-
-
-        <div className="relative z-10 ml-8 2xl:ml-10 w-max rounded-t-[28px] 2xl:rounded-t-[32px] border border-b-0 border-[#EDEEF4] bg-white px-3 2xl:px-4 pb-2.5 2xl:pb-3 pt-2 2xl:pt-2.5">
-          <button
-            type="button"
-            onClick={() => {
-              const firstMissing = missingFonts[0];
-              if (firstMissing) setResolvingFont(firstMissing);
-            }}
-            className="flex h-[34px] 2xl:h-[42px] items-center gap-1.5 2xl:gap-2 rounded-[80px] bg-white px-3.5 2xl:px-4 text-[12px] 2xl:text-sm font-semibold text-black shadow-[0_0_4px_rgba(0,0,0,0.06)]"
-          >
-            <Upload className="h-3.5 w-3.5 2xl:h-4 2xl:w-4 text-[#7A5AF8]" />
-            Fonts Upload
-          </button>
-        </div>
-
-        <div className="relative -mt-px rounded-[28px] w-full  2xl:rounded-[32px] border border-[#EDEEF4] bg-white p-5 2xl:p-3 shadow-[0_0_16px_rgba(80,71,230,0.08)] transition-shadow duration-200 ">
-          {fontAnalysisNotice ? (
-            <div
-              className={`mb-5 flex items-start gap-3 rounded-[16px] border px-4 py-3 ${fontAnalysisNotice.tone === "success"
-                ? "border-[#BBF7D0] bg-[#F0FDF4]"
-                : "border-[#FDE68A] bg-[#FFFBEB]"
-                }`}
-            >
-              <span
-                className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${fontAnalysisNotice.tone === "success"
-                  ? "bg-[#DCFCE7] text-[#16A34A]"
-                  : "bg-[#FEF3C7] text-[#D97706]"
-                  }`}
-              >
-                {fontAnalysisNotice.tone === "success" ? (
-                  <Check className="h-3.5 w-3.5" />
-                ) : (
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                )}
-              </span>
-              <div className="min-w-0">
-                <p
-                  className={`text-sm font-semibold ${fontAnalysisNotice.tone === "success"
-                    ? "text-[#166534]"
-                    : "text-[#92400E]"
-                    }`}
-                >
-                  {fontAnalysisNotice.title}
-                </p>
-                <p
-                  className={`mt-1 text-xs leading-[1.45] ${fontAnalysisNotice.tone === "success"
-                    ? "text-[#237A50]"
-                    : "text-[#9A5A08]"
-                    }`}
-                >
-                  {fontAnalysisNotice.description}
-                </p>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="flex flex-wrap gap-3 pt-2 min-h-[140px] ">
+    <main className="mx-auto mt-7 w-full max-w-[742px] px-4 pb-12 font-syne">
+      <section aria-label="Analyze fonts" aria-busy={isUploading || isAutoContinuing}>
+        <div className="rounded-xl border border-[#DBDBDB99] bg-white px-[9px] py-[11px] shadow-[0_4px_12px_rgba(0,0,0,0.08)]">
+          <p className="sr-only">Select a highlighted font to upload its original file or choose a replacement. Selected replacement fonts will be used when you continue.</p>
+          <div className="grid min-h-[127px] grid-cols-2 items-start gap-3 sm:grid-cols-4">
             {fontChips.length > 0 ? (
               fontChips.map((font, index) => {
                 const label = chipLabel(font);
@@ -773,21 +488,21 @@ function AnalyzePanel({
                     onClick={() => {
                       if (missingFont) setResolvingFont(missingFont);
                     }}
-                    className={`relative flex   h-[59px] items-center justify-center rounded-xl border px-4 text-center text-sm font-semibold transition ${isMissing
+                    className={`relative flex h-[79px] min-w-0 items-center justify-center rounded-lg border p-2.5 text-center text-xs font-medium transition ${isMissing
                       ? isUploaded
                         ? "border-[#CFEBDD] bg-[#F4FBF7] text-[#236C4A] hover:border-[#9FD7BA]"
-                        : "border-[#F3C78F] bg-[#FFF8F1] text-[#D12B1F] hover:border-[#E8AA5D]"
-                      : "border-[#E8EAF0] bg-white text-[#171821]"
+                        : "border-[#FDDCAB] bg-[#FFFAF5] text-[#C4320A] hover:border-[#E8AA5D]"
+                      : "border-[#EDEEEF] bg-white text-[#191919]"
                       } disabled:cursor-default`}
-                    title={label}
+                    title={isMissing ? `${label}: upload the original font or choose a replacement` : label}
                   >
                     <span className="line-clamp-2 text-xs">{label}</span>
                     {isMissing ? (
-                      <span className="absolute -right-2 -top-2 flex h-[26px] w-[46px] items-center justify-center rounded-full border border-[#EDEEEF] bg-white text-[#171821] shadow-sm">
+                      <span className="absolute right-3 -top-3 flex h-[26px] w-[46px] items-center justify-center rounded-full border border-[#EDEEEF] bg-white text-[#171821] shadow-sm">
                         {isUploaded ? (
                           <Check className="h-3.5 w-3.5 text-[#237A50]" />
                         ) : (
-                          <Upload className="h-3.5 w-3.5" />
+                          <img src="/custom-template/analyze-font-upload.svg" alt="" />
                         )}
                       </span>
                     ) : null}
@@ -802,24 +517,12 @@ function AnalyzePanel({
             )}
           </div>
 
-          <div className="mt-6 flex justify-end px-1 pb-1">
-            <GradientPillButton
-              onClick={onContinue}
-              disabled={isUploading || isAutoContinuing}
-              className="h-9 min-w-[120px] px-6 text-sm font-semibold"
-            >
-              {isUploading || isAutoContinuing ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {isAutoContinuing ? "Preparing..." : "Creating..."}
-                </>
-              ) : (
-                <>
-                  Continue
-                  <ChevronRight className="h-4 w-4" />
-                </>
-              )}
-            </GradientPillButton>
+          <div className="mt-2.5 flex items-center justify-between gap-3">
+            <AttachmentButton onClick={onReplaceFile} disabled={isUploading || isAutoContinuing} />
+            <div className="flex items-center gap-5">
+              <ProcessingStatus label={isUploading || isAutoContinuing ? "Preparing preview..." : missingFonts.some((font) => !uploadedFontNames.has(font.name)) ? "Review missing fonts" : "Fonts ready"} />
+              <ContinueButton onClick={onContinue} disabled={isUploading || isAutoContinuing} label="Continue to slide preview" />
+            </div>
           </div>
         </div>
 
@@ -830,12 +533,12 @@ function AnalyzePanel({
                 type="button"
                 onClick={() => setResolvingFont(null)}
                 aria-label="Close"
-                className="absolute -right-14 top-0 flex h-11 w-11 items-center justify-center rounded-full bg-white text-[#20222B] shadow-sm"
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-white text-[#20222B] shadow-sm"
               >
                 <X className="h-6 w-6" />
               </button>
 
-              <div className="flex items-center justify-between gap-4 border-b border-[#EEF0F5] px-5 py-4">
+              <div className="flex items-center justify-between gap-4 border-b border-[#EEF0F5] px-5 py-4 pr-14">
                 <div className="min-w-0">
                   <h3 className=" text-lg font-semibold text-[#191919]">
                     Resolve Missing Font
@@ -847,7 +550,7 @@ function AnalyzePanel({
                 <button
                   type="button"
                   onClick={() => setResolvingFont(null)}
-                  className="h-9 rounded-full px-5 text-sm font-medium text-black"
+                  className="h-9 rounded-full px-5 text-sm font-medium text-white"
                   style={{ background: pillGradient }}
                 >
                   Save
@@ -913,17 +616,6 @@ function AnalyzePanel({
 
       </section>
 
-      <div className="mt-auto w-full pb-5 pt-12 2xl:pb-8 2xl:pt-16">
-        <div className="mx-auto flex max-w-[558px] items-center gap-2 rounded-[6px] bg-[#F4F7FB] px-3 py-2 text-[11px] leading-tight text-[#505462] 2xl:max-w-[700px] 2xl:px-4 2xl:py-2.5 2xl:text-[13px]">
-          <span className="flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full bg-[#0B4FBD] text-[10px] font-bold text-white 2xl:h-4 2xl:w-4 2xl:text-[11px]">
-            i
-          </span>
-          <p>
-            Exact font files maintain typography and spacing. Fallback fonts may
-            slightly change the layout and text wrapping.
-          </p>
-        </div>
-      </div>
     </main>
   );
 }
@@ -1087,6 +779,7 @@ function ThumbnailStrip({
   urls,
   selectedIndex,
   onSelect,
+  inline = false,
   bottomOffset = "bottom-[88px] sm:bottom-[96px] 2xl:bottom-[104px]",
 }: {
   slides?: ProcessedSlide[];
@@ -1094,6 +787,7 @@ function ThumbnailStrip({
   selectedIndex: number;
   onSelect: (index: number) => void;
   bottomOffset?: string;
+  inline?: boolean;
 }) {
   const count = slides?.length ?? urls?.length ?? 0;
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -1157,9 +851,9 @@ function ThumbnailStrip({
 
   return (
     <div
-      className={`fixed ${bottomOffset} inset-x-0 z-20 flex justify-center px-4 sm:px-8`}
+      className={inline ? "relative mt-7 flex justify-center px-2" : `fixed ${bottomOffset} inset-x-0 z-20 flex justify-center px-4 sm:px-8`}
     >
-      <div className="relative flex w-full max-w-[1280px] justify-center">
+      <div className={`relative flex w-full justify-center ${inline ? "max-w-[1087px]" : "max-w-[1280px]"}`}>
         <button
           type="button"
           onClick={() => scrollThumbnails(-1)}
@@ -1170,7 +864,7 @@ function ThumbnailStrip({
         </button>
         <div
           ref={scrollRef}
-          className="hide-scrollbar flex w-max max-w-full items-center gap-2 overflow-x-auto overscroll-x-contain rounded-[8px] px-1 pb-3 pt-1 [-webkit-overflow-scrolling:touch] sm:gap-3 2xl:gap-4"
+          className={`hide-scrollbar flex w-max max-w-full items-center gap-2 overflow-x-auto overscroll-x-contain rounded-[8px] pb-3 pt-1 [-webkit-overflow-scrolling:touch] ${inline ? "px-3 sm:gap-7" : "px-1 sm:gap-3 2xl:gap-4"}`}
         >
           {Array.from({ length: count }, (_, index) => {
             const slide = slides?.[index];
@@ -1185,8 +879,9 @@ function ThumbnailStrip({
                 key={`thumb-${index}`}
                 type="button"
                 data-slide-thumbnail-index={index}
+                aria-current={isSelected ? "true" : undefined}
                 onClick={() => onSelect(index)}
-                className={`relative aspect-video w-[76px] shrink-0 overflow-visible rounded-[5px] border bg-white p-0 transition sm:w-[86px] sm:rounded-[6px] 2xl:w-[96px] ${isSelected ? "border-[#D9D9E2] ring-1 ring-[#D9D9E2]" : "border-[#ECECF2]"
+                className={`relative aspect-video shrink-0 overflow-visible rounded-[5px] border bg-white p-0 transition sm:rounded-[6px] ${inline ? "w-[104px]" : "w-[76px] sm:w-[86px] 2xl:w-[96px]"} ${isSelected ? "border-[#D9D9E2] ring-1 ring-[#D9D9E2]" : "border-[#ECECF2]"
                   }`}
               >
                 {isReady && url ? (
@@ -1199,13 +894,14 @@ function ThumbnailStrip({
                 ) : (
                   <div className="h-full w-full rounded-[5px] bg-white sm:rounded-[6px]" />
                 )}
-                <span className="absolute -bottom-1.5 -left-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-[#E6E7ED] bg-white text-[9px] text-black shadow-sm sm:-bottom-2 sm:-left-2 sm:h-5 sm:w-5 sm:text-[10px]">
+                <span className={`absolute flex items-center justify-center rounded-full border border-[#EDEEEF] bg-white text-[#191919] ${inline ? "-left-3 top-1/2 h-6 w-6 -translate-y-1/2 text-xs" : "-bottom-1.5 -left-1.5 h-4 w-4 text-[9px] shadow-sm sm:-bottom-2 sm:-left-2 sm:h-5 sm:w-5 sm:text-[10px]"}`}>
                   {index + 1}
                 </span>
               </button>
             );
           })}
         </div>
+        {inline && canScrollRight && <span aria-hidden="true" className="pointer-events-none absolute right-0 top-1 z-[5] h-[58px] w-20 bg-gradient-to-r from-transparent to-[#F9F9F9]" />}
         <button
           type="button"
           onClick={() => scrollThumbnails(1)}
@@ -1306,29 +1002,11 @@ function PreviewPanel({
   const selectedUrl = previewUrls[selectedIndex] ?? previewUrls[0];
 
   return (
-    <main className="h-screen overflow-hidden bg-white px-4 pt-[80px] font-syne sm:px-6 sm:pt-[92px] 2xl:px-10 2xl:pt-[104px]">
-      <div className="relative mx-auto w-full max-w-[1280px]">
-        {selectedUrl ? (
-          <ScaledScreenshotSlide
-            src={selectedUrl}
-            alt={`Slide ${selectedIndex + 1}`}
-            fitToAvailableHeight
-            bottomReserve={176}
-          />
-        ) : (
-          <ResponsiveSlideViewport
-            className="border border-[#E8E8EF] bg-[#F7F7FA]"
-            fitToAvailableHeight
-            bottomReserve={176}
-          >
-            <div className="flex h-full w-full items-center justify-center text-sm text-[#777985] 2xl:text-base">
-              Preview unavailable
-            </div>
-          </ResponsiveSlideViewport>
-        )}
+    <main className="mx-auto mt-7 w-full max-w-[1312px] px-4 pb-24 font-syne">
+      <div className="relative aspect-video w-full overflow-hidden rounded-[10px] border border-[#EDEEEF] bg-[#F9F8F8] shadow-[0_0_14px_rgba(0,0,0,0.14)]">
+        {selectedUrl ? <img src={resolveBackendAssetUrl(selectedUrl)} alt={`Slide ${selectedIndex + 1}`} className="absolute inset-0 block h-full w-full object-contain" draggable={false} /> : <div className="flex h-full items-center justify-center text-sm text-[#777985]">Preview unavailable</div>}
       </div>
-
-      <ThumbnailStrip urls={previewUrls} selectedIndex={selectedIndex} onSelect={onSelect} />
+      <ThumbnailStrip urls={previewUrls} selectedIndex={selectedIndex} onSelect={onSelect} inline />
     </main>
   );
 }
@@ -1460,11 +1138,11 @@ function SaveTemplateModal({
           onClick={onClose}
           disabled={isSaving}
           aria-label="Close"
-          className="absolute -right-[54px] 2xl:-right-[62px] top-0 flex h-[46px] w-[46px] 2xl:h-[52px] 2xl:w-[52px] items-center justify-center rounded-full bg-white text-black shadow-sm disabled:opacity-50"
+          className="absolute right-3 top-5 flex h-8 w-8 items-center justify-center rounded-full bg-white text-black shadow-sm disabled:opacity-50"
         >
           <X className="h-6 w-6 2xl:h-7 2xl:w-7" />
         </button>
-        <div className="flex h-[74px] 2xl:h-[84px] items-center justify-between border-b border-[#EDEEF3] px-5 2xl:px-6">
+        <div className="flex h-[74px] 2xl:h-[84px] items-center justify-between border-b border-[#EDEEF3] pl-5 pr-14 2xl:pl-6">
           <div>
             <h2 className="text-[16px] 2xl:text-lg font-medium text-black">{title}</h2>
             <p className="mt-1 text-[11px] 2xl:text-[13px] text-[#7E818C]">{subtitle}</p>
@@ -1473,7 +1151,7 @@ function SaveTemplateModal({
             type="button"
             onClick={handleSubmit}
             disabled={isSaving || !name.trim()}
-            className="inline-flex h-8 2xl:h-9 min-w-[78px] 2xl:min-w-[88px] items-center justify-center rounded-[58px] px-5 2xl:px-6 text-[13px] 2xl:text-sm font-medium text-black disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex h-8 2xl:h-9 min-w-[78px] 2xl:min-w-[88px] items-center justify-center rounded-[58px] px-5 2xl:px-6 text-[13px] 2xl:text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
             style={{ background: pillGradient }}
           >
             {isSaving ? <Loader2 className="h-4 w-4 2xl:h-5 2xl:w-5 animate-spin" /> : submitLabel}
@@ -1541,6 +1219,7 @@ const CustomTemplatePage = () => {
     uploadFont,
     fontUploadAndPreview,
     retrySlide,
+    reset,
   } = useTemplateCreation();
 
   const defaultTemplateName = getDefaultTemplateName(selectedFile) || "Untitled Template";
@@ -1572,7 +1251,6 @@ const CustomTemplatePage = () => {
     () => missingFonts.filter((font) => !uploadedFontNames.has(font.name)),
     [missingFonts, uploadedFontNames],
   );
-  const hasPendingMissingFonts = pendingMissingFonts.length > 0;
   const selectedLocalFontReplacements = useMemo<
     Record<string, { fontName: string; fontUrl: string }>
   >(
@@ -1709,32 +1387,11 @@ const CustomTemplatePage = () => {
 
   const handleCheckFonts = useCallback(async () => {
     if (!selectedFile) return;
-    const data = await checkFonts(selectedFile);
-    if (!data) return;
-
-    const unavailableFontCount = data.unavailable_fonts?.length ?? 0;
-    if (unavailableFontCount === 0) {
-      notify.success(
-        "All fonts available",
-        "Preparing the slide preview automatically.",
-      );
-      return;
-    }
-
-    notify.warning(
-      "Fonts need attention",
-      `${unavailableFontCount} font${unavailableFontCount === 1 ? "" : "s"} are unavailable. Upload exact font files or use the selected fallback fonts before continuing.`,
-    );
+    await checkFonts(selectedFile);
   }, [checkFonts, selectedFile]);
 
   const handleFontUploadAndPreview = useCallback(async () => {
     if (!selectedFile) return;
-    if (hasPendingMissingFonts) {
-      notify.warning(
-        "Missing fonts",
-        "Continuing without uploaded font files. Selected local replacements will be applied.",
-      );
-    }
     const data = await fontUploadAndPreview(
       selectedFile,
       selectedLocalFontReplacements,
@@ -1748,7 +1405,6 @@ const CustomTemplatePage = () => {
     }
   }, [
     fontUploadAndPreview,
-    hasPendingMissingFonts,
     selectedLocalFontReplacements,
     selectedFile,
   ]);
@@ -1879,7 +1535,7 @@ const CustomTemplatePage = () => {
           disabled={state.isLoading || isSubmittingTemplate}
           fullWidth
         >
-          {isSubmittingTemplate ? "Creating Template..." : "Create Template"}
+          {isSubmittingTemplate ? "Creating Template..." : "Generate Template"}
         </GradientPillButton>
       );
     }
@@ -1909,7 +1565,8 @@ const CustomTemplatePage = () => {
   return (
     <div className="relative min-h-screen bg-white">
       <div className={""}>
-        <StudioTopBar activeStep={activeStep} />
+        <GenerateHeader />
+        {!showReview && <TemplateCreationTitle activeStep={activeStep} />}
 
         {showUpload ? (
           <UploadPanel
@@ -1934,6 +1591,7 @@ const CustomTemplatePage = () => {
             onLoadLocalFontOptions={handleLoadLocalFontOptions}
             onContinue={handleFontUploadAndPreview}
             isAutoContinuing={isAutoPreviewQueued}
+            onReplaceFile={() => { reset(); removeFile(); }}
           />
         ) : null}
 
@@ -1959,7 +1617,7 @@ const CustomTemplatePage = () => {
         ) : null}
       </div>
 
-      {bottomAction ? <StudioBottomAction>{bottomAction}</StudioBottomAction> : null}
+      {bottomAction ? <StudioBottomAction wide={showPreview}>{bottomAction}</StudioBottomAction> : null}
 
       <SaveTemplateModal
         isOpen={isTemplateModalOpen}
