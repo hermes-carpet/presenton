@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { desktopRequestDenied, DESKTOP_TOKEN_HEADER } from "@/lib/desktop-auth";
 
 export type ServerAuthStatus = {
   configured: boolean;
@@ -19,10 +20,16 @@ function fastApiBase(): string {
 export async function authStatusForRequest(
   request: Request
 ): Promise<ServerAuthStatus> {
+  if (desktopRequestDenied(request)) {
+    return { configured: true, authenticated: false, username: null, user_id: null, role: null };
+  }
   const cookie = request.headers.get("cookie") || "";
   try {
     const response = await fetch(`${fastApiBase()}/api/v1/auth/status`, {
-      headers: cookie ? { cookie } : undefined,
+      headers: {
+        ...(cookie ? { cookie } : {}),
+        ...(request.headers.get(DESKTOP_TOKEN_HEADER) ? { [DESKTOP_TOKEN_HEADER]: request.headers.get(DESKTOP_TOKEN_HEADER)! } : {}),
+      },
       cache: "no-store",
     });
     if (!response.ok) {

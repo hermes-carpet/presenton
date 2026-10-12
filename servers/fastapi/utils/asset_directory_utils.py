@@ -11,6 +11,7 @@ from utils.get_env import (
 )
 from utils.path_helpers import get_resource_path
 from api.v1.auth.assets import (
+    PRIVATE_APP_DATA_ROOTS,
     SHARED_APP_DATA_ROOTS,
     is_app_data_path_authorized,
     normalized_app_data_parts,
@@ -127,8 +128,13 @@ def resolve_app_path_to_filesystem(path_or_url: str) -> Optional[str]:
         app_data = get_app_data_directory_env()
         if not app_data or not _app_data_url_allowed(path):
             return None
-        relative = path[len("/app_data/"):]
-        return _existing_file_within(os.path.join(app_data, relative), app_data)
+        parts = normalized_app_data_parts(path)
+        if not parts:
+            return None
+        # Match StaticFiles' per-asset-root containment: an image symlink must
+        # not turn into a read of private configuration elsewhere in app_data.
+        root = os.path.join(app_data, parts[0])
+        return _existing_file_within(os.path.join(app_data, *parts), root)
 
     if path.startswith("/static/"):
         relative = path[len("/static/"):]
@@ -172,7 +178,7 @@ def _app_data_url_allowed(path: str) -> bool:
         return bool(
             parts
             and (
-                is_disable_auth_enabled()
+                (is_disable_auth_enabled() and parts[0] in PRIVATE_APP_DATA_ROOTS)
                 or parts[0] in SHARED_APP_DATA_ROOTS
             )
         )

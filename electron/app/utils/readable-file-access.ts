@@ -22,7 +22,11 @@ function resolveBaseDir(baseDir: string): string {
 }
 
 function allowedReadableFileBaseDirs(): string[] {
-  return [getAppDataDir(), getTempDir()].map(resolveBaseDir);
+  return [
+    ...["images", "uploads", "exports", "pptx-to-html", "pptx-to-json", "fonts", "templates"]
+      .map((directory) => path.join(getAppDataDir(), directory)),
+    getTempDir(),
+  ].map((directory) => path.resolve(directory));
 }
 
 function assertPathAllowed(candidatePath: string, baseDirs: string[]): void {
@@ -44,8 +48,11 @@ export function resolveReadableLocalFile(filePath: unknown): string {
   }
 
   const requestedPath = path.resolve(filePath);
+  if (path.extname(requestedPath).toLowerCase() !== ".txt") {
+    throw new LocalFileAccessError("Access denied: Only document text is readable", "ACCESS_DENIED");
+  }
   const allowedBaseDirs = allowedReadableFileBaseDirs();
-  assertPathAllowed(requestedPath, allowedBaseDirs);
+  assertPathAllowed(requestedPath, [...allowedBaseDirs, ...allowedBaseDirs.map(resolveBaseDir)]);
 
 
   let resolvedPath: string;
@@ -55,39 +62,13 @@ export function resolveReadableLocalFile(filePath: unknown): string {
     throw new LocalFileAccessError("File not found", "NOT_FOUND");
   }
 
-  assertPathAllowed(resolvedPath, allowedBaseDirs);
+  assertPathAllowed(resolvedPath, allowedBaseDirs.map(resolveBaseDir));
+  if (path.extname(resolvedPath).toLowerCase() !== ".txt") {
+    throw new LocalFileAccessError("Access denied: Only document text is readable", "ACCESS_DENIED");
+  }
   return resolvedPath;
 }
 
 export function readReadableLocalFile(filePath: unknown): string {
-  if (typeof filePath !== "string" || filePath.trim().length === 0) {
-    throw new LocalFileAccessError("Invalid file path", "INVALID_PATH");
-  }
-
-  const requestedPath = path.resolve(filePath);
-  const [appDataDir, tempDir] = allowedReadableFileBaseDirs();
-
-  if (!(requestedPath.startsWith(appDataDir) || requestedPath.startsWith(tempDir))) {
-    throw new LocalFileAccessError(
-      "Access denied: File path not allowed",
-      "ACCESS_DENIED",
-    );
-  }
-
-  let resolvedPath: string;
-  try {
-    resolvedPath = fs.realpathSync(requestedPath);
-  } catch {
-    throw new LocalFileAccessError("File not found", "NOT_FOUND");
-  }
-
-  if (!(resolvedPath.startsWith(appDataDir) || resolvedPath.startsWith(tempDir))) {
-    throw new LocalFileAccessError(
-      "Access denied: File path not allowed",
-      "ACCESS_DENIED",
-    );
-  }
-  assertPathAllowed(resolvedPath, [appDataDir, tempDir]);
-
-  return fs.readFileSync(resolvedPath, "utf-8");
+  return fs.readFileSync(resolveReadableLocalFile(filePath), "utf-8");
 }

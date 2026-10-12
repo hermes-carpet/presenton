@@ -435,6 +435,7 @@ def test_linked_request_is_forwarded_with_body_query_and_stream(monkeypatch):
         headers=[
             (b"authorization", b"Bearer local-session"),
             (b"cookie", b"session=local-secret"),
+            (b"x-presenton-desktop-token", b"private-desktop-token"),
             (b"host", b"localhost:5001"),
             (b"content-length", b"25"),
             (b"content-type", b"application/json"),

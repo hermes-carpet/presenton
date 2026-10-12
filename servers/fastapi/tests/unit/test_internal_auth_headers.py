@@ -62,3 +62,12 @@ def test_internal_headers_use_current_users_database_jwt(monkeypatch, tmp_path):
 def test_internal_headers_are_empty_without_request_owner(monkeypatch):
     monkeypatch.delenv("DISABLE_AUTH", raising=False)
     assert asyncio.run(internal.authenticated_internal_request_headers()) == {}
+
+
+def test_desktop_internal_calls_receive_desktop_cookie(monkeypatch):
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("PRESENTON_ELECTRON", "true")
+    monkeypatch.setenv("PRESENTON_DESKTOP_TOKEN", "a" * 64)
+    assert asyncio.run(internal.authenticated_internal_request_headers()) == {
+        "Cookie": "presenton_desktop_session=" + "a" * 64
+    }

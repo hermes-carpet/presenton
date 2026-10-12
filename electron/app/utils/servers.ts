@@ -373,7 +373,11 @@ async function waitForServer(url: string, timeout = 120000, signal?: AbortSignal
     try {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
-        const req = http.get(url, (res) => {
+        const req = http.get(url, {
+          headers: process.env.PRESENTON_DESKTOP_TOKEN
+            ? { "x-presenton-desktop-token": process.env.PRESENTON_DESKTOP_TOKEN }
+            : {},
+        }, (res) => {
           cleanup();
           res.resume();
           if (res.statusCode && res.statusCode >= 200 && res.statusCode < 500) {

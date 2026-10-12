@@ -58,6 +58,9 @@ test("regular-user runtime config keeps provider choices and redacts secrets", a
       PEXELS_API_KEY: "shared-image-secret",
       DISABLE_IMAGE_GENERATION: false,
       LLM_MAX_OUTPUT_TOKENS: 16384,
+      AUTH_SECRET_KEY: "private-signing-key",
+      AUTH_PASSWORD_HASH: "private-password-hash",
+      AUTH_USERNAME: "private-account",
     })
   );
   const previousPath = process.env.USER_CONFIG_PATH;
@@ -73,6 +76,7 @@ test("regular-user runtime config keeps provider choices and redacts secrets", a
     assert.equal(result.config.LLM_MAX_OUTPUT_TOKENS, 16384);
     assert.doesNotMatch(JSON.stringify(result), /shared-secret/);
     assert.doesNotMatch(JSON.stringify(result), /shared-image-secret/);
+    assert.doesNotMatch(JSON.stringify(result), /AUTH_|private-signing-key|private-password-hash/);
   } finally {
     if (previousPath === undefined) delete process.env.USER_CONFIG_PATH;
     else process.env.USER_CONFIG_PATH = previousPath;

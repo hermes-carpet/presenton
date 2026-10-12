@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthDisabled } from "@/utils/auth";
+import { desktopRequestDenied } from "@/lib/desktop-auth";
 
 /**
  * API-only: session required for all /api/* except auth, telemetry, public
@@ -94,7 +95,14 @@ function isApiAuthExempt(pathname: string): boolean {
 }
 
 export async function proxy(request: NextRequest) {
+  const denied = desktopRequestDenied(request);
+  if (denied) return denied;
   const { pathname } = request.nextUrl;
+  // The desktop transport guard also covers pages and the image optimizer.
+  // Account-mode pages retain their existing layout/login behavior.
+  if (!pathname.startsWith("/api/") && !isFastApiAssetPath(pathname) && pathname !== "/pdf-maker") {
+    return NextResponse.next();
+  }
 
   // Docker handles these paths in nginx. Electron has no nginx and chooses
   // random loopback ports, so proxy them at request time instead of baking a
@@ -164,5 +172,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/app_data/:path*", "/static/:path*", "/pdf-maker"],
+  matcher: ["/((?!_next/static|favicon.ico).*)"],
 };

@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const {
@@ -87,4 +89,27 @@ test("validateSharpRuntime accepts matching native and libvips packages", () => 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("reusing a pinned export package refreshes its application runner", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "presenton-export-runner-"));
+  try {
+    const runtime = path.join(root, "presentation-export");
+    const scripts = path.join(root, "scripts");
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ presentationExportVersion: "v1.0.34" }));
+    fs.copyFileSync(fileURLToPath(new URL("./sync-presentation-export.cjs", import.meta.url)), path.join(scripts, "sync-presentation-export.cjs"));
+    const runner = fs.readFileSync(fileURLToPath(new URL("./run-presentation-export.mjs", import.meta.url)), "utf8");
+    fs.writeFileSync(path.join(scripts, "run-presentation-export.mjs"), runner);
+    writePackage(runtime, "@presenton/export-core", { version: "1.0.34" });
+    const platform = getRuntimePlatformArch();
+    const native = `@img/sharp-${platform}`;
+    writePackage(runtime, "sharp", { version: "0.35.3", optionalDependencies: { [native]: "0.35.3" } });
+    writePackage(runtime, native, { version: "0.35.3" });
+    fs.writeFileSync(path.join(runtime, "runner.mjs"), "// stale runner");
+    fs.writeFileSync(path.join(runtime, "presenton-export-version.json"), JSON.stringify({ version: "v1.0.34", package: "presenton-export-core-opensource-1.0.34.tgz" }));
+    const output = execFileSync(process.execPath, [path.join(scripts, "sync-presentation-export.cjs")], { encoding: "utf8", env: { ...process.env, EXPORT_RUNTIME_VERSION: "" } });
+    assert.match(output, /Using export-core 1\.0\.34/);
+    assert.equal(fs.readFileSync(path.join(runtime, "runner.mjs"), "utf8"), runner);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -4,12 +4,14 @@ from api.v1.auth.users import get_jwt_strategy
 from models.sql.user import User
 from services.database import async_session_maker
 from utils.get_env import is_disable_auth_enabled
+from api.v1.auth.desktop import desktop_cookie_header
 
 
 async def authenticated_internal_request_headers() -> dict[str, str]:
     """Issue a database-backed JWT for the current trusted internal request."""
     if is_disable_auth_enabled():
-        return {}
+        cookie = desktop_cookie_header()
+        return {"Cookie": cookie} if cookie else {}
 
     owner_id = get_current_owner_id()
     if owner_id is None:

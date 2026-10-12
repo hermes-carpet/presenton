@@ -3,6 +3,7 @@ import os from "os";
 import fs from "fs/promises";
 import { spawn } from "child_process";
 import { sanitizeFilename } from "@/app/(presentation-generator)/utils/others";
+import { desktopCookieHeader } from "@/lib/desktop-auth";
 import {
   BoundedTextBuffer,
   memorySnapshotMb,
@@ -149,7 +150,8 @@ async function runBundledPresentationExportLocked(params: {
   format: BundledPresentationExportFormat;
   cookieHeader?: string;
 }): Promise<BundledPresentationExportResult> {
-  const { presentationId, title, format, cookieHeader } = params;
+  const { presentationId, title, format } = params;
+  const cookieHeader = params.cookieHeader || desktopCookieHeader();
   const exportRoot = getExportPackageRoot();
   const entrypoint = await resolveExportEntrypoint(exportRoot);
   const appRoot = getPresentonAppRoot();

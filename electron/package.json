@@ -30,10 +30,11 @@
     "automation"
   ],
   "scripts": {
-    "start": "npm run copy:templates && electron . --no-sandbox",
+    "start": "npm run setup:desktop-runtime && npm run copy:templates && electron . --no-sandbox",
     "dist": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
-    "dev": "npm run copy:templates && node -e \"fs.rmSync('app_dist',{recursive:true,force:true})\" && tsc && electron . --no-sandbox",
+    "dev": "npm run setup:desktop-runtime && npm run copy:templates && node -e \"fs.rmSync('app_dist',{recursive:true,force:true})\" && tsc && electron . --no-sandbox",
+    "setup:desktop-runtime": "npm run setup:export-runtime && npm run prepare:export-chromium",
     "setup:env": "npm install && cd ../servers/fastapi && uv sync && cd ../nextjs && npm install && cd ../../electron && npm run setup:export-runtime && npm run prepare:imagemagick",
     "install:pyinstaller": "cd ../servers/fastapi && echo 'pyinstaller will be installed via uv run --with when building'",
     "typecheck": "tsc --noEmit",

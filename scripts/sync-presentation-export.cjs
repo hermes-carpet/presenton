@@ -303,6 +303,9 @@ async function main() {
     return;
   }
   if (existing.ok && !forceInstall) {
+    // The package pin can stay unchanged while the application's auth/export
+    // bridge changes. Refresh that bridge before Electron copies the runtime.
+    fs.copyFileSync(sourceRunner, targetRunner);
     console.log(`[presentation-export] Using export-core ${existing.packageVersion}`);
     return;
   }
