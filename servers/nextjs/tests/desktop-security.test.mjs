@@ -21,6 +21,8 @@ test.before(async () => {
   await writeFile(entry, [
     `export * from ${source("lib/desktop-auth.ts")};`,
     `export * as configRoute from ${source("app/api/user-config/route.ts")};`,
+    `export { handleSaveLLMConfig } from ${source("utils/storeHelpers.ts")};`,
+    `export { store } from ${source("store/store.ts")};`,
     `export * as readFileRoute from ${source("app/api/read-file/route.ts")};`,
     `export * from ${source("lib/readable-local-file.ts")};`,
     `export * from ${source("proxy.ts")};`,
@@ -93,6 +95,37 @@ test("settings reject the original text/plain attack and accept authorized JSON 
   assert.equal(config.LLM, "custom");
   assert.equal(calls.at(-1).options.headers["x-presenton-desktop-token"], TOKEN);
   assert.equal((await (await security.configRoute.GET(request(undefined, { headers: authorized }))).json()).OPENAI_API_KEY, "saved-key");
+});
+
+test("frontend provider saves pass the settings route JSON check", async () => {
+  let savedConfig;
+  globalThis.fetch = async (url, options) => {
+    if (url === "/api/user-config") {
+      const browserRequest = new NextRequest("http://127.0.0.1:40001/api/user-config", options);
+      browserRequest.headers.set("host", "127.0.0.1:40001");
+      browserRequest.headers.set("x-presenton-desktop-token", TOKEN);
+      return security.configRoute.POST(browserRequest);
+    }
+    if (url.endsWith("/auth/status")) {
+      return Response.json({ configured: true, authenticated: true, user_id: null, role: "admin" });
+    }
+    if (url.endsWith("/admin/provider-settings") && options.method === "PUT") {
+      savedConfig = JSON.parse(options.body);
+      return Response.json(savedConfig);
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  await security.handleSaveLLMConfig({
+    LLM: "custom",
+    CUSTOM_MODEL: "local-model",
+    CUSTOM_LLM_URL: "http://local-provider:8080/v1",
+    DISABLE_IMAGE_GENERATION: true,
+  });
+
+  assert.equal(savedConfig.LLM, "custom");
+  assert.equal(savedConfig.CUSTOM_MODEL, "local-model");
+  assert.equal(security.store.getState().userConfig.llm_config.CUSTOM_MODEL, "local-model");
 });
 
 test("document readers preserve previews but deny credentials, tasks, traversal and symlinks", async () => {

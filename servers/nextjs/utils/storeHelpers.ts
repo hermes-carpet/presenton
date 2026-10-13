@@ -411,6 +411,7 @@ export const handleSaveLLMConfig = async (llmConfig: LLMConfig) => {
 
   const response = await fetch("/api/user-config", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(normalizedConfig),
   });
   if (!response.ok) {
