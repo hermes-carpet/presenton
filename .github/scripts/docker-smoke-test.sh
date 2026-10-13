@@ -30,8 +30,8 @@ docker run -d --name "$name" -p "${port}:80" \
   "$image" >/dev/null
 
 mcp() {
-  # $1: JSON-RPC body; prints response headers+body
-  curl -sS -i --max-time 30 -X POST "${base}/mcp" \
+  # $1: JSON-RPC body; $2: timeout in seconds (default 30). Prints headers+body.
+  curl -sS -i --max-time "${2:-30}" -X POST "${base}/mcp" \
     -H "content-type: application/json" \
     -H "accept: application/json, text/event-stream" \
     ${session:+-H "mcp-session-id: ${session}"} \
@@ -65,30 +65,43 @@ done
 echo "MCP lists the canvas tools."
 
 # The MCP server must come back after a crash (start.js supervises it).
-docker exec "$name" python -c '
-import os, signal
+mcp_pids() {
+  docker exec "$name" python -c '
+import os
 for pid in filter(str.isdigit, os.listdir("/proc")):
     try:
         cmd = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
     except OSError:
         continue
-    if b"mcp_server.py" in cmd:
-        os.kill(int(pid), signal.SIGKILL)
+    if any(arg.endswith(b"mcp_server.py") for arg in cmd):
+        print(pid)
 '
+}
+old_pid=$(mcp_pids)
+if [ -z "$old_pid" ] || [ "$(wc -l <<<"$old_pid")" -ne 1 ]; then
+  echo "Expected one MCP server process, found: ${old_pid:-none}"
+  exit 1
+fi
+log_lines=$(docker logs "$name" 2>&1 | wc -l || true)
+docker exec "$name" sh -c "kill -9 ${old_pid}"
 session=""
-for _ in $(seq 1 30); do
+new_pid=""
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 2
-  if response=$(mcp "$init" 2>/dev/null) && grep -qi '^mcp-session-id:' <<<"$response"; then
+  new_pid=$(mcp_pids || true)
+  [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] || continue
+  if response=$(mcp "$init" 5 2>/dev/null) && grep -qi '^mcp-session-id:' <<<"$response"; then
     session=$(grep -i '^mcp-session-id:' <<<"$response" | head -1 | cut -d: -f2- | tr -d ' \r')
     break
   fi
 done
-logs=$(docker logs "$name" 2>&1 || true)
-if [ -z "$session" ] || ! grep -q "App MCP process exited" <<<"$logs"; then
-  echo "MCP server was not restarted after being killed"
+new_logs=$(docker logs "$name" 2>&1 | tail -n "+$((log_lines + 1))" || true)
+if [ -z "$session" ] || ! grep -q "App MCP server exited (code: null, signal: SIGKILL)" <<<"$new_logs"; then
+  echo "MCP server (pid ${old_pid}) was not restarted after being killed (now: ${new_pid:-none})"
   exit 1
 fi
-echo "MCP server restarts after a crash."
+echo "MCP server restarts after a crash (pid ${old_pid} -> ${new_pid})."
 
 # Expect a status code from a GET, retrying while the backend is still starting
 # (nginx answers 502 until FastAPI finishes migrations).
