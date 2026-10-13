@@ -637,11 +637,11 @@ const startServers = async (nginxReadyPromise) => {
   // Fork: supervise the MCP server. Upstream starts it with its output
   // discarded and never notices if it dies or hangs, so nginx answers /mcp
   // with 502 until the container is restarted. Here its output goes to the
-  // container log, and it is restarted, with backoff, when it exits, doesn't
-  // answer HTTP within 2 minutes of starting, or misses 3 health probes in a
-  // row. After 10 failures without a healthy minute in between (e.g. port 8001
-  // held by another process) the container exits, so Docker's restart policy
-  // takes over and the failure is visible.
+  // container log, and it is restarted, with backoff, when it exits, isn't
+  // healthy within 2 minutes of starting, or misses 3 health probes in a row
+  // (no answer within 5 s, or a 5xx). After 10 failures without a healthy
+  // minute in between (e.g. port 8001 held by another process) the container
+  // exits, so Docker's restart policy takes over and the failure is visible.
   const APPMCP_READY_TIMEOUT_MS = 120_000;
   const APPMCP_PROBE_INTERVAL_MS = 30_000;
   const APPMCP_PROBE_MISSES = 3;
@@ -653,6 +653,8 @@ const startServers = async (nginxReadyPromise) => {
   );
   let appmcpFailures = 0;
 
+  // Healthy means any non-5xx answer: a bare GET gets 401 with auth on and a
+  // 4xx from the MCP transport with auth off.
   const probeAppMcp = () =>
     new Promise((resolve) => {
       const req = request(
@@ -660,7 +662,7 @@ const startServers = async (nginxReadyPromise) => {
         (response) => {
           response.resume();
           req.destroy();
-          resolve(true);
+          resolve(response.statusCode < 500);
         }
       );
       req.once("error", () => resolve(false));
@@ -740,33 +742,34 @@ const startServers = async (nginxReadyPromise) => {
       onDown(killReason ? `${killReason} (${status})` : `exited (${status})`);
     });
 
-    waitForProcessHttp(
-      "App MCP",
-      appmcpProcess,
-      appmcpPort,
-      "/mcp",
-      "127.0.0.1",
-      APPMCP_READY_TIMEOUT_MS
-    ).then(
-      () => {
-        if (isDown || !isAlive()) {
+    const readyDeadline = Date.now() + APPMCP_READY_TIMEOUT_MS;
+    const waitUntilHealthy = async () => {
+      while (!isDown && isAlive()) {
+        if (await probeAppMcp()) {
+          break;
+        }
+        if (Date.now() >= readyDeadline) {
+          killAppMcp(
+            `was not healthy on port ${appmcpPort} within ${APPMCP_READY_TIMEOUT_MS / 1000}s`
+          );
           return;
         }
-        healthySince = Date.now();
-        let misses = 0;
-        probeTimer = setInterval(async () => {
-          const isResponding = await probeAppMcp();
-          misses = isResponding ? 0 : misses + 1;
-          if (misses >= APPMCP_PROBE_MISSES) {
-            killAppMcp(`missed ${misses} health probes`);
-          }
-        }, APPMCP_PROBE_INTERVAL_MS);
-      },
-      () =>
-        killAppMcp(
-          `did not answer on port ${appmcpPort} within ${APPMCP_READY_TIMEOUT_MS / 1000}s`
-        )
-    );
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+      if (isDown || !isAlive()) {
+        return;
+      }
+      healthySince = Date.now();
+      let misses = 0;
+      probeTimer = setInterval(async () => {
+        const isHealthy = await probeAppMcp();
+        misses = isHealthy ? 0 : misses + 1;
+        if (misses >= APPMCP_PROBE_MISSES) {
+          killAppMcp(`missed ${misses} health probes`);
+        }
+      }, APPMCP_PROBE_INTERVAL_MS);
+    };
+    waitUntilHealthy();
   };
   if (isAppMcpEnabled) {
     spawnAppMcpProcess();

@@ -66,7 +66,8 @@ echo "MCP lists the canvas tools."
 
 # The MCP server must come back after a crash (start.js supervises it).
 mcp_pids() {
-  docker exec "$name" python -c '
+  # $1: timeout in seconds (default 30)
+  timeout "${1:-30}" docker exec "$name" python -c '
 import os
 for pid in filter(str.isdigit, os.listdir("/proc")):
     try:
@@ -82,21 +83,27 @@ if [ -z "$old_pid" ] || [ "$(wc -l <<<"$old_pid")" -ne 1 ]; then
   echo "Expected one MCP server process, found: ${old_pid:-none}"
   exit 1
 fi
-log_lines=$(docker logs "$name" 2>&1 | wc -l || true)
-docker exec "$name" sh -c "kill -9 ${old_pid}"
+log_lines=$(timeout 30 docker logs "$name" 2>&1 | wc -l || true)
+timeout 30 docker exec "$name" sh -c "kill -9 ${old_pid}"
 session=""
 new_pid=""
+# Every call below is bounded by what is left of the deadline.
 deadline=$((SECONDS + 180))
+remaining() {
+  local left=$((deadline - SECONDS))
+  echo $((left > 1 ? left : 1))
+}
 while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 2
-  new_pid=$(mcp_pids || true)
-  [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] || continue
+  new_pid=$(mcp_pids "$(remaining)" || true)
+  # Exactly one MCP process, and not the killed one.
+  [ -n "$new_pid" ] && [ "$(wc -l <<<"$new_pid")" -eq 1 ] && [ "$new_pid" != "$old_pid" ] || continue
   if response=$(mcp "$init" 5 2>/dev/null) && grep -qi '^mcp-session-id:' <<<"$response"; then
     session=$(grep -i '^mcp-session-id:' <<<"$response" | head -1 | cut -d: -f2- | tr -d ' \r')
     break
   fi
 done
-new_logs=$(docker logs "$name" 2>&1 | tail -n "+$((log_lines + 1))" || true)
+new_logs=$(timeout "$(remaining)" docker logs "$name" 2>&1 | tail -n "+$((log_lines + 1))" || true)
 if [ -z "$session" ] || ! grep -q "App MCP server exited (code: null, signal: SIGKILL)" <<<"$new_logs"; then
   echo "MCP server (pid ${old_pid}) was not restarted after being killed (now: ${new_pid:-none})"
   exit 1

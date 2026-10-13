@@ -47,40 +47,46 @@ class _SpecTool:
     deck_types: frozenset[str]
 
 
+HTTP_METHODS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
+
+def _spec_error(message: str) -> RuntimeError:
+    return RuntimeError(f"openai_spec.json: {message}; regenerate the spec (see MODS.md).")
+
+
 def _load_spec_tools() -> tuple[_SpecTool, ...]:
     with OPENAPI_SPEC_PATH.open("r", encoding="utf-8") as f:
         spec = json.load(f)
-    tools = []
-    for path, operations in spec["paths"].items():
-        for method, operation in operations.items():
+    tools: dict[str, _SpecTool] = {}
+    for path, path_item in spec["paths"].items():
+        for method, operation in path_item.items():
+            if method not in HTTP_METHODS:
+                continue
             operation_id = operation.get("operationId", "")
             if not operation_id.startswith(TOOL_OPERATION_PREFIX):
                 continue
+            mcp_name = operation_id.removeprefix(TOOL_OPERATION_PREFIX)
+            expected_path = f"{CANVAS_PREFIX}/presentation/{{presentation_id}}/tools/{mcp_name}"
+            if method != "post" or path != expected_path:
+                raise _spec_error(f"{operation_id} is {method.upper()} {path}, expected POST {expected_path}")
+            if mcp_name in tools:
+                raise _spec_error(f"duplicate canvas operation {operation_id}")
             deck_types = operation.get(DECK_TYPES_EXTENSION)
             if (
-                method != "post"
-                or not path.startswith(CANVAS_PREFIX + "/")
-                or not isinstance(deck_types, list)
+                not isinstance(deck_types, list)
                 or not deck_types
                 or not set(deck_types) <= set(DECK_TYPES)
             ):
-                raise RuntimeError(
-                    f"openai_spec.json: canvas operation {operation_id} has no valid "
-                    f"{DECK_TYPES_EXTENSION} or route; regenerate the spec (see MODS.md)."
-                )
-            tools.append(
-                _SpecTool(
-                    operation_id=operation_id,
-                    mcp_name=operation_id.removeprefix(TOOL_OPERATION_PREFIX),
-                    path=path,
-                    deck_types=frozenset(deck_types),
-                )
+                raise _spec_error(f"{operation_id} has no valid {DECK_TYPES_EXTENSION}")
+            tools[mcp_name] = _SpecTool(
+                operation_id=operation_id,
+                mcp_name=mcp_name,
+                path=path,
+                deck_types=frozenset(deck_types),
             )
     if not tools:
-        raise RuntimeError(
-            "openai_spec.json has no canvas tool routes; regenerate the spec (see MODS.md)."
-        )
-    return tuple(tools)
+        raise _spec_error("no canvas tool routes")
+    return tuple(tools.values())
 
 
 _SPEC_TOOLS = _load_spec_tools()
