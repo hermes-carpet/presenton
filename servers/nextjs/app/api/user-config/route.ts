@@ -5,6 +5,7 @@ import {
   requireAdminApi,
 } from "@/lib/server-auth-role";
 import { readRuntimeProviderConfig } from "@/lib/runtime-provider-config";
+import { DESKTOP_TOKEN_HEADER } from "@/lib/desktop-auth";
 
 const canChangeKeys = process.env.CAN_CHANGE_KEYS !== "false";
 
@@ -27,6 +28,7 @@ async function forwardProviderSettings(
       method,
       headers: {
         ...(cookie ? { cookie } : {}),
+        ...(request.headers.get(DESKTOP_TOKEN_HEADER) ? { [DESKTOP_TOKEN_HEADER]: request.headers.get(DESKTOP_TOKEN_HEADER)! } : {}),
         ...(body ? { "content-type": "application/json" } : {}),
       },
       body,
@@ -77,6 +79,9 @@ export async function POST(request: Request) {
   const denied = await requireAdminApi(request);
   if (denied) return denied;
   if (!canChangeKeys) return immutableResponse();
+  if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
 
   try {
     const body = await request.text();

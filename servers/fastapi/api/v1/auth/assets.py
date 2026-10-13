@@ -1,5 +1,9 @@
 from urllib.parse import unquote, urlsplit
 import uuid
+import os
+
+from fastapi import FastAPI
+from starlette.staticfiles import StaticFiles
 
 
 PRIVATE_APP_DATA_ROOTS = {
@@ -10,6 +14,14 @@ PRIVATE_APP_DATA_ROOTS = {
     "pptx-to-json",
 }
 SHARED_APP_DATA_ROOTS = {"fonts", "templates"}
+
+
+def mount_app_data_assets(app: FastAPI, app_data_dir: str) -> None:
+    """Expose assets only; each mount independently rejects symlink escape."""
+    for root in sorted(PRIVATE_APP_DATA_ROOTS | SHARED_APP_DATA_ROOTS):
+        directory = os.path.join(app_data_dir, root)
+        os.makedirs(directory, exist_ok=True)
+        app.mount(f"/app_data/{root}", StaticFiles(directory=directory), name=f"app_data_{root}")
 
 
 def normalized_app_data_parts(path_or_uri: str) -> tuple[str, ...] | None:

@@ -41,3 +41,10 @@ def test_browser_cookie_wins_over_internal_and_bearer_tokens():
     request.state.internal_session_token = "middleware-generated-jwt"
 
     assert build_export_cookie_header(request) == cookie_header
+
+
+def test_desktop_header_authenticated_requests_supply_export_cookie(monkeypatch):
+    monkeypatch.setenv("PRESENTON_ELECTRON", "true")
+    monkeypatch.setenv("PRESENTON_DESKTOP_TOKEN", "a" * 64)
+    request = _request(headers={"x-presenton-desktop-token": "a" * 64})
+    assert build_export_cookie_header(request) == "presenton_desktop_session=" + "a" * 64

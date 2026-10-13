@@ -1,5 +1,5 @@
 require("dotenv").config();
-import { app, BrowserWindow, dialog, globalShortcut } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, session } from "electron";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -52,6 +52,7 @@ import {
 } from "./utils/export-chromium";
 import { syncUserConfigFromEnv } from "./utils/user-config-env";
 import { resolveExportRuntimeRoot } from "./utils/export-msix-runtime";
+import { initializeDesktopSession } from "./utils/desktop-auth";
 
 installSafeConsole();
 
@@ -468,6 +469,10 @@ app.whenReady().then(async () => {
   const [fastApiPort, nextjsPort] = await findUnusedPorts();
   safeLog(`FastAPI port: ${fastApiPort}, NextJS port: ${nextjsPort}`);
   setupEnv(fastApiPort, nextjsPort);
+  await initializeDesktopSession(session.defaultSession, [
+    `${localhost}:${nextjsPort}`,
+    `${localhost}:${fastApiPort}`,
+  ]);
   setupIpcHandlers();
 
   await finishChromiumCacheRecovery(

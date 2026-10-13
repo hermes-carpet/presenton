@@ -5,6 +5,7 @@ import {
   getDownloadsDir,
   getTempDir,
   resourceBaseDir,
+  isDev,
 } from "../utils/constants";
 import fs from "fs";
 import path from "path";
@@ -23,6 +24,7 @@ import {
   resolveLaunchableExportChromiumPath,
 } from "../utils/export-chromium";
 import { resolveExportSpawnTarget } from "../utils/export-msix-runtime";
+import { desktopCookieHeader } from "../utils/desktop-auth";
 
 type RuntimeCandidate = {
   command: string;
@@ -61,7 +63,9 @@ export function setupExportHandlers() {
         return {
           success: false,
           message:
-            "Export requires Chromium. Restart Presenton and complete the Chromium setup step when prompted.",
+            isDev
+              ? "The export runtime is missing. Run npm run setup:desktop-runtime in the electron directory, then restart the desktop development app."
+              : "The export browser is missing from this installation. Reinstall Presenton to restore export support.",
         };
       }
 
@@ -83,6 +87,7 @@ export function setupExportHandlers() {
         format: exportAs,
         title: title,
         fastapiUrl: process.env.NEXT_PUBLIC_FAST_API,
+        cookieHeader: desktopCookieHeader(),
       };
 
       const randomUuid = uuidv4();

@@ -62,10 +62,14 @@ function allowedReadableFileBaseDirs(scope?: FileOwnerScope): string[] {
       path.join(tempDirectory, userId),
       ...sharedRoots,
       ...legacyAdminRoots,
-    ].map(resolveBaseDir);
+    ].map((directory) => path.resolve(directory));
   }
 
-  return [appDataDirectory, tempDirectory].map(resolveBaseDir);
+  return [
+    ...["images", "uploads", "exports", "pptx-to-html", "pptx-to-json", "fonts", "templates"]
+      .map((directory) => path.join(appDataDirectory, directory)),
+    tempDirectory,
+  ].map((directory) => path.resolve(directory));
 }
 
 function assertNotAnotherUsersFile(
@@ -103,9 +107,14 @@ export function resolveReadableLocalFile(
   }
 
   const requestedPath = path.resolve(filePath);
+  // This reader serves decomposed document text, not task files, credentials,
+  // databases or logs. Export task JSON can contain session credentials.
+  if (path.extname(requestedPath).toLowerCase() !== ".txt") {
+    throw new LocalFileAccessError("Access denied: Only document text is readable", 403);
+  }
   const allowedBaseDirs = allowedReadableFileBaseDirs(scope);
   assertNotAnotherUsersFile(requestedPath, scope);
-  assertPathAllowed(requestedPath, allowedBaseDirs);
+  assertPathAllowed(requestedPath, [...allowedBaseDirs, ...allowedBaseDirs.map(resolveBaseDir)]);
 
 
   let resolvedPath: string;
@@ -116,7 +125,10 @@ export function resolveReadableLocalFile(
   }
 
   assertNotAnotherUsersFile(resolvedPath, scope);
-  assertPathAllowed(resolvedPath, allowedBaseDirs);
+  assertPathAllowed(resolvedPath, allowedBaseDirs.map(resolveBaseDir));
+  if (path.extname(resolvedPath).toLowerCase() !== ".txt") {
+    throw new LocalFileAccessError("Access denied: Only document text is readable", 403);
+  }
   return resolvedPath;
 }
 

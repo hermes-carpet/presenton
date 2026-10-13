@@ -37,6 +37,9 @@ function buildRunOptions(task, legacyTask) {
   const puppeteerCacheDirectory = process.env.PUPPETEER_CACHE_DIR?.trim();
   const fastapiUrl = legacyTask.fastapiUrl || process.env.NEXT_PUBLIC_FAST_API?.trim();
   const cookies = parseCookieHeader(legacyTask.cookieHeader);
+  // Browser cookies cannot be scoped to a port. The desktop capability is
+  // supplied below as an exact-origin header instead, including asset fetches.
+  if (cookies) delete cookies.presenton_desktop_session;
 
   const outputDirectory = appDataDirectory
     ? task.type === "export" || task.type === "html-to-any"
@@ -45,16 +48,28 @@ function buildRunOptions(task, legacyTask) {
     : undefined;
 
   const urlConfigs =
-    cookies && typeof task.url === "string"
+    cookies && Object.keys(cookies).length && typeof task.url === "string"
       ? [{ url: task.url, match: "origin", cookies }]
-      : undefined;
+      : [];
+  // Export Chromium and Node asset downloads are outside Electron's session.
+  // Never attach the desktop capability to arbitrary task/asset URLs.
+  const desktopToken = process.env.PRESENTON_DESKTOP_TOKEN;
+  if (process.env.PRESENTON_ELECTRON === "true" && desktopToken) {
+    for (const url of (process.env.PRESENTON_DESKTOP_ORIGINS || "").split(",")) {
+      if (url) urlConfigs.push({
+        url,
+        match: "origin",
+        headers: { "x-presenton-desktop-token": desktopToken },
+      });
+    }
+  }
 
   return {
     ...(outputDirectory ? { outputDirectory } : {}),
     ...(tempDirectory ? { tempDirectory } : {}),
     ...(executablePath ? { browserLaunchOptions: { executablePath } } : {}),
     ...(puppeteerCacheDirectory ? { puppeteerCacheDirectory } : {}),
-    ...(urlConfigs ? { urlConfigs } : {}),
+    ...(urlConfigs.length ? { urlConfigs } : {}),
     ...(fastapiUrl || process.env.ASSETS_BASE_URL?.trim()
       ? { modifyWindow: buildModifyWindow(fastapiUrl) }
       : {}),

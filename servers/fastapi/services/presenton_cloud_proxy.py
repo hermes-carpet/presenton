@@ -94,6 +94,7 @@ _REQUEST_HEADERS_TO_DROP = _HOP_BY_HOP_HEADERS | {
     "content-length",
     "cookie",
     "host",
+    "x-presenton-desktop-token",
 }
 _RESPONSE_HEADERS_TO_DROP = _HOP_BY_HOP_HEADERS | {
     "content-length",

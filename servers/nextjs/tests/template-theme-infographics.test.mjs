@@ -172,3 +172,47 @@ test("resolves the template id used when a presentation loads", () => {
     "",
   );
 });
+
+test("missing optional themes are cached as absent without logging an error", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  let requests = 0;
+  const warnings = [];
+  globalThis.fetch = async () => {
+    requests += 1;
+    return new Response(JSON.stringify({ detail: "Template not found" }), { status: 404 });
+  };
+  console.warn = (...args) => warnings.push(args);
+  try {
+    assert.equal(await themedInserts.TemplateService.getTemplateTheme("missing-theme-test"), null);
+    assert.equal(await themedInserts.TemplateService.getTemplateTheme("template-v2-missing-theme-test"), null);
+    assert.equal(requests, 1);
+    assert.deepEqual(warnings, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  }
+});
+
+test("transient theme failures remain visible and can be retried", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  let requests = 0;
+  const warnings = [];
+  globalThis.fetch = async () => {
+    requests += 1;
+    return requests === 1
+      ? new Response("Service unavailable", { status: 503 })
+      : Response.json({ theme: { colors: theme } });
+  };
+  console.warn = (...args) => warnings.push(args);
+  try {
+    assert.equal(await themedInserts.TemplateService.getTemplateTheme("retry-theme-test"), null);
+    assert.equal((await themedInserts.TemplateService.getTemplateTheme("retry-theme-test")).primary, theme.primary);
+    assert.equal(requests, 2);
+    assert.equal(warnings.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  }
+});

@@ -168,6 +168,16 @@ class TemplateService {
                     ),
                     { headers: getHeader() },
                 );
+                if (response.status === 404) {
+                    // Older decks can outlive their source template. Use the
+                    // presentation's stored theme (or the default) without
+                    // repeatedly requesting an unavailable optional theme.
+                    this.templateThemeCache.set(cacheKey, {
+                        expiresAt: Date.now() + TEMPLATE_THEME_CACHE_TTL_MS,
+                        value: null,
+                    });
+                    return null;
+                }
                 if (!response.ok) {
                     throw new Error(`Template theme request failed (${response.status})`);
                 }

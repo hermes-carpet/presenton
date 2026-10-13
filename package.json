@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Open-source AI presentation generator",
   "scripts": {
-    "test": "npm run test:template-converter && node --test scripts/package-metadata.test.mjs scripts/sync-presentation-export.test.mjs scripts/user-config-env.test.mjs",
+    "test": "npm run test:template-converter && node --test scripts/package-metadata.test.mjs scripts/desktop-export.test.mjs scripts/sync-presentation-export.test.mjs scripts/user-config-env.test.mjs",
     "convert:template": "node scripts/convert-template.mjs",
     "convert:presentation-template": "node scripts/convert-presentation-template.mjs",
     "test:template-converter": "node --test scripts/convert-template.test.mjs scripts/convert-presentation-template.test.mjs",

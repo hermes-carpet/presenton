@@ -1459,6 +1459,14 @@ async def _resolve_prepare_layout(
 
 
 def build_export_cookie_header(request: Request) -> Optional[str]:
+    from api.v1.auth.desktop import desktop_cookie_header
+
+    desktop_cookie = desktop_cookie_header()
+    if desktop_cookie:
+        # Header-authenticated renderer/background calls need credentials in
+        # the isolated export browser too; account JWT cookies are preserved.
+        cookie = (request.headers.get("cookie") or "").strip()
+        return f"{cookie}; {desktop_cookie}" if cookie else desktop_cookie
     cookie_header = (request.headers.get("cookie") or "").strip()
     if cookie_header:
         return cookie_header

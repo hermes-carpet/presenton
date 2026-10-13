@@ -652,7 +652,8 @@ Notes:
   single call, then returns the data needed by `start_template_generation`.
 - `upload_files` accepts reference documents and images as base64 and returns
   user-scoped paths that can be passed unchanged to Standard or Smart generation.
-- MCP is not available in the Electron desktop app (`PRESENTON_ELECTRON=true`). Electron runs with `DISABLE_AUTH=true` by default, and the MCP server is disabled there to avoid auth conflicts.
+- External REST API and MCP access are not available in the Electron desktop app (`PRESENTON_ELECTRON=true`). Its local HTTP servers are internal application services. Electron runs without account login by default and supplies a private credential generated at each launch to its own app and export requests; anonymous local clients cannot access those services. The MCP server remains disabled there.
+- Only asset subdirectories are served under `/app_data`; configuration, databases and logs are never web assets. Document preview readers accept `.txt` document files within the allowed asset/temp directories and reject export task JSON and private application files.
 
 > Note: LLM and image variables above are forwarded from **`docker-compose.yml`** when set in `.env`.
 

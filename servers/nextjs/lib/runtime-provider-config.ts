@@ -30,7 +30,7 @@ export function readRuntimeProviderConfig(): RuntimeProviderConfig {
     readUserConfigFile<LLMConfig>(path) || {}
   );
   const config = Object.fromEntries(
-    Object.entries(full).map(([key, value]) => [
+    Object.entries(full).filter(([key]) => !key.toUpperCase().startsWith("AUTH_")).map(([key, value]) => [
       key,
       SECRET_FIELD.test(key) && value
         ? REDACTED_SECRET_PLACEHOLDER
