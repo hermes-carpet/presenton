@@ -634,19 +634,51 @@ const startServers = async (nginxReadyPromise) => {
   };
   watchManagedProcess("FastAPI", fastApiProcess, restartFastApi);
 
-  const appmcpProcess = spawn(
-    "python",
-    ["mcp_server.py", "--port", appmcpPort.toString()],
-    {
-      cwd: fastapiDir,
-      stdio: "ignore",
-      env: process.env,
-    }
-  );
+  // Fork: supervise the MCP server like the other children. Upstream starts it
+  // with its output discarded and never notices if it exits, so nginx answers
+  // /mcp with 502 until the container is restarted. Forward its output to the
+  // container log and restart it, with backoff, if it crashes. A clean exit
+  // (e.g. MCP disabled) is not restarted.
+  let appmcpRestartDelayMs = 1000;
+  const spawnAppMcpProcess = () => {
+    const startedAt = Date.now();
+    const appmcpProcess = spawn(
+      "python",
+      ["mcp_server.py", "--port", appmcpPort.toString()],
+      {
+        cwd: fastapiDir,
+        stdio: ["ignore", "inherit", "inherit"],
+        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      }
+    );
+    managedProcesses.add(appmcpProcess);
 
-  appmcpProcess.on("error", (err) => {
-    console.error("App MCP process failed to start:", err);
-  });
+    appmcpProcess.on("error", (err) => {
+      console.error("App MCP process failed to start:", err);
+    });
+
+    appmcpProcess.on("exit", (code, signal) => {
+      managedProcesses.delete(appmcpProcess);
+      if (isShuttingDown || (code === 0 && !signal)) {
+        return;
+      }
+      if (Date.now() - startedAt > 60000) {
+        appmcpRestartDelayMs = 1000;
+      }
+      console.error(
+        `App MCP process exited (code: ${code}${
+          signal ? `, signal: ${signal}` : ""
+        }); restarting in ${appmcpRestartDelayMs / 1000}s.`
+      );
+      setTimeout(() => {
+        if (!isShuttingDown) {
+          spawnAppMcpProcess();
+        }
+      }, appmcpRestartDelayMs);
+      appmcpRestartDelayMs = Math.min(appmcpRestartDelayMs * 2, 60000);
+    });
+  };
+  spawnAppMcpProcess();
 
   let nextjsProcess = spawnNextjsProcess();
   const restartNextjs = () => {

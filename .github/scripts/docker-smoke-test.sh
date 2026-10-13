@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Start a Presenton image and check, through nginx (the way a remote MCP client
-# reaches it): the MCP handshake and canvas tools, the canvas API, the web UI,
-# PDF/PPTX export with the bundled headless browser, offline OCR, and the
-# offline mem0 embedding model. The MCP URL is
+# reaches it): the MCP handshake and canvas tools, MCP restart after a crash,
+# the canvas API, the web UI, PDF/PPTX export with the bundled headless
+# browser, offline OCR, and the offline mem0 embedding model. The MCP URL is
 # /mcp without a trailing slash (/mcp/ redirects to an internal address).
 # Usage: docker-smoke-test.sh <image> [host-port]
 set -euo pipefail
@@ -63,6 +63,32 @@ for tool in get_presentation_context reorder_slide getSlideAtIndex addElement sa
   fi
 done
 echo "MCP lists the canvas tools."
+
+# The MCP server must come back after a crash (start.js supervises it).
+docker exec "$name" python -c '
+import os, signal
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+    except OSError:
+        continue
+    if b"mcp_server.py" in cmd:
+        os.kill(int(pid), signal.SIGKILL)
+'
+session=""
+for _ in $(seq 1 30); do
+  sleep 2
+  if response=$(mcp "$init" 2>/dev/null) && grep -qi '^mcp-session-id:' <<<"$response"; then
+    session=$(grep -i '^mcp-session-id:' <<<"$response" | head -1 | cut -d: -f2- | tr -d ' \r')
+    break
+  fi
+done
+logs=$(docker logs "$name" 2>&1 || true)
+if [ -z "$session" ] || ! grep -q "App MCP process exited" <<<"$logs"; then
+  echo "MCP server was not restarted after being killed"
+  exit 1
+fi
+echo "MCP server restarts after a crash."
 
 # Expect a status code from a GET, retrying while the backend is still starting
 # (nginx answers 502 until FastAPI finishes migrations).
