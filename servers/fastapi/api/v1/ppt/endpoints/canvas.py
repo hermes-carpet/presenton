@@ -19,6 +19,7 @@ from sqlmodel import func, select
 from models.sql.presentation import PresentationModel
 from models.sql.slide import SlideModel
 from services.canvas_tool_registry import (
+    DECK_TYPES_EXTENSION,
     CanvasTool,
     DeckType,
     get_canvas_tools,
@@ -276,6 +277,8 @@ def _register_canvas_tool(tool: CanvasTool) -> None:
         summary=tool.mcp_name,
         description=tool.description,
         openapi_extra={
+            # Read by mcp_canvas.py, which must not import the tool registry.
+            DECK_TYPES_EXTENSION: sorted(tool.deck_types),
             "requestBody": {
                 "required": bool(tool.input_schema.get("required")),
                 "content": {"application/json": {"schema": tool.input_schema}},

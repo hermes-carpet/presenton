@@ -16,6 +16,8 @@ from services.chat.tools import ChatTools
 
 DeckType = Literal["standard", "smart"]
 DECK_TYPES: tuple[DeckType, ...] = ("standard", "smart")
+# OpenAPI extension on each tool route listing the deck types it applies to.
+DECK_TYPES_EXTENSION = "x-presenton-deck-types"
 
 
 @dataclass(frozen=True)

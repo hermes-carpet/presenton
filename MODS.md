@@ -28,7 +28,14 @@ Use this file as the checklist when resolving merge conflicts with upstream.
     system prompt for that deck type).
   - `PATCH .../slide/{id}/reorder` (`reorder_slide`); the chat tools have no reorder.
 - `mcp_canvas.py` exposes those routes as MCP tools for the enabled generation
-  mode(s), and adds a short section to the MCP instructions.
+  mode(s), and adds a short section to the MCP instructions. It reads the tools
+  from `openai_spec.json`: each tool route carries `x-presenton-deck-types`.
+  **Code that runs in the MCP process must never import `services.chat.*`,
+  `canvas_tool_registry` or `documents_loader`.** They load the ML stack
+  (~110 MB). They also import upstream's `services.temp_file_service`, which
+  empties `TEMP_DIRECTORY` at import. That deletes FastAPI's in-flight files,
+  and when both processes start together it can crash one of them.
+  `test_mcp_server_import_stays_light` enforces this.
 
 ## New files (mod only; upstream never touches these)
 

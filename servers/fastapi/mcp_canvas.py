@@ -3,16 +3,27 @@
 Exposes Presenton's in-app assistant tools (see services/canvas_tool_registry.py)
 plus deck context and slide reordering. Kept out of mcp_server.py so upstream
 changes there merge cleanly; mcp_server.py only calls the hooks below. See MODS.md.
+
+The tools are read from openai_spec.json, never from the tool registry: importing
+services.chat loads the ML stack (~150 MB) and services.temp_file_service, which
+empties TEMP_DIRECTORY on import, under FastAPI's feet.
 """
 
+import json
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 from fastmcp.server.providers.openapi import MCPType, RouteMap
 
-from services.canvas_tool_registry import DECK_TYPES, get_canvas_tools
 from utils.get_env import PresentationGenerationMode
 
+OPENAPI_SPEC_PATH = Path(__file__).with_name("openai_spec.json")
 CANVAS_PREFIX = "/api/v1/ppt/canvas"
+TOOL_OPERATION_PREFIX = "canvas_tool_"
+# Same values as DECK_TYPES and DECK_TYPES_EXTENSION in canvas_tool_registry.
+DECK_TYPES = ("standard", "smart")
+DECK_TYPES_EXTENSION = "x-presenton-deck-types"
 
 MCP_CANVAS_SHARED_ROUTE_MAPS = [
     RouteMap(
@@ -27,10 +38,57 @@ MCP_CANVAS_SHARED_ROUTE_MAPS = [
     ),
 ]
 
+
+@dataclass(frozen=True)
+class _SpecTool:
+    operation_id: str
+    mcp_name: str
+    path: str
+    deck_types: frozenset[str]
+
+
+def _load_spec_tools() -> tuple[_SpecTool, ...]:
+    with OPENAPI_SPEC_PATH.open("r", encoding="utf-8") as f:
+        spec = json.load(f)
+    tools = []
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            operation_id = operation.get("operationId", "")
+            if not operation_id.startswith(TOOL_OPERATION_PREFIX):
+                continue
+            deck_types = operation.get(DECK_TYPES_EXTENSION)
+            if (
+                method != "post"
+                or not path.startswith(CANVAS_PREFIX + "/")
+                or not isinstance(deck_types, list)
+                or not deck_types
+                or not set(deck_types) <= set(DECK_TYPES)
+            ):
+                raise RuntimeError(
+                    f"openai_spec.json: canvas operation {operation_id} has no valid "
+                    f"{DECK_TYPES_EXTENSION} or route; regenerate the spec (see MODS.md)."
+                )
+            tools.append(
+                _SpecTool(
+                    operation_id=operation_id,
+                    mcp_name=operation_id.removeprefix(TOOL_OPERATION_PREFIX),
+                    path=path,
+                    deck_types=frozenset(deck_types),
+                )
+            )
+    if not tools:
+        raise RuntimeError(
+            "openai_spec.json has no canvas tool routes; regenerate the spec (see MODS.md)."
+        )
+    return tuple(tools)
+
+
+_SPEC_TOOLS = _load_spec_tools()
+
 MCP_CANVAS_TOOL_NAMES = {
     "get_canvas_context_api_v1_ppt_canvas_presentation__presentation_id__context_get": "get_presentation_context",
     "canvas_reorder_slide_api_v1_ppt_canvas_slide__slide_id__reorder_patch": "reorder_slide",
-    **{tool.operation_id: tool.mcp_name for tool in get_canvas_tools()},
+    **{tool.operation_id: tool.mcp_name for tool in _SPEC_TOOLS},
 }
 
 
@@ -47,10 +105,10 @@ def get_canvas_route_maps(
     route_maps.extend(
         RouteMap(
             methods=["POST"],
-            pattern=f"^{re.escape(CANVAS_PREFIX + tool.path)}$",
+            pattern=f"^{re.escape(tool.path)}$",
             mcp_type=MCPType.TOOL,
         )
-        for tool in get_canvas_tools()
+        for tool in _SPEC_TOOLS
         if tool.deck_types & deck_types
     )
     return route_maps
@@ -59,7 +117,7 @@ def get_canvas_route_maps(
 def get_canvas_tool_names(generation_mode: PresentationGenerationMode) -> set[str]:
     deck_types = _deck_types_for_mode(generation_mode)
     return {"get_presentation_context", "reorder_slide"} | {
-        tool.mcp_name for tool in get_canvas_tools() if tool.deck_types & deck_types
+        tool.mcp_name for tool in _SPEC_TOOLS if tool.deck_types & deck_types
     }
 
 
