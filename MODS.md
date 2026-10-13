@@ -28,7 +28,14 @@ Use this file as the checklist when resolving merge conflicts with upstream.
     system prompt for that deck type).
   - `PATCH .../slide/{id}/reorder` (`reorder_slide`); the chat tools have no reorder.
 - `mcp_canvas.py` exposes those routes as MCP tools for the enabled generation
-  mode(s), and adds a short section to the MCP instructions.
+  mode(s), and adds a short section to the MCP instructions. It reads the tools
+  from `openai_spec.json`: each tool route carries `x-presenton-deck-types`.
+  **Code that runs in the MCP process must never import `services.chat.*`,
+  `canvas_tool_registry` or `documents_loader`.** They load the ML stack
+  (~110 MB). They also import upstream's `services.temp_file_service`, which
+  empties `TEMP_DIRECTORY` at import. That deletes FastAPI's in-flight files,
+  and when both processes start together it can crash one of them.
+  `test_mcp_server_import_stays_light` enforces this.
 
 ## New files (mod only; upstream never touches these)
 
@@ -51,6 +58,7 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 | `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`, builds `Dockerfile.fork` natively on amd64 and arm64 (`ubuntu-24.04-arm`). Each architecture is smoke-tested and pushed by digest; the job then checks that the pushed manifest has exactly the tested image's layers. It publishes one manifest tagged `latest`, `<version>`, `<full version>` and `sha-<commit>`. Tags are gated on amd64; a failed arm64 publishes them amd64-only and warns on the `upstream-sync` issue. Only a build of `main`'s current head moves `latest` and the version tags; manual runs on other branches, and re-runs of older `main` test runs, publish only `sha-<commit>`. |
 | `.github/scripts/docker-smoke-test.sh` | Smoke test through nginx: MCP handshake and canvas tools, canvas API, web UI, PDF/PPTX export, offline OCR, offline mem0 embedding. |
 | `docker-compose.fork.yml` | Runs the published image on a server: no repo checkout, `.env` passthrough, healthcheck. |
+| `.github/README.md` | Fork overview that GitHub shows on the repo page instead of the root `README.md`, which stays upstream's. |
 
 ### Owner setup for the fork CI
 
@@ -114,6 +122,7 @@ Measured locally:
 | `servers/fastapi/mcp_server.py` | +1 import from `mcp_canvas`; `MCP_TOOL_NAMES.update(MCP_CANVAS_TOOL_NAMES)` after the dict; `route_maps.extend(get_canvas_route_maps(generation_mode))` before the final `EXCLUDE` map; `instructions += get_canvas_instructions(generation_mode)` before `return instructions` | Hook for the mod. | Take upstream, re-add the four lines. The route-map line must stay before the catch-all `RouteMap(mcp_type=MCPType.EXCLUDE)`. |
 | `servers/fastapi/tests/unit/test_mcp_server_auth.py` | +1 import; `test_mcp_tools_follow_presentation_generation_mode` asserts `expected_tools \| get_canvas_tool_names(generation_mode)` | Hook for the mod. | Take upstream, re-add the import and the `\| get_canvas_tool_names(...)` on that assert. |
 | `nginx.conf` | `proxy_redirect` in the `/mcp/` location rewrites FastMCP's slash redirect (`http://localhost:8001/mcp`, built from the internal Host) to the public origin (`X-Forwarded-*`, else the request's Host) | Remote MCP clients that use `/mcp/` can follow the redirect instead of being sent to localhost. | Take upstream, re-add the `proxy_redirect` line in `location /mcp/`. |
+| `start.js` | The `mcp_server.py` spawn is replaced by `spawnAppMcpProcess`. Its output goes to the container log. It is restarted with backoff (1 s doubling to 60 s) when it exits, isn't healthy within 120 s of starting, or misses 3 health probes in a row (30 s apart; a miss is no answer within 5 s, or a 5xx). Known limit: anything that blocks its event loop for ~95 s gets it restarted; tool calls are async proxies to FastAPI, so they don't. Backoff resets after a healthy minute; after 10 failures in a row the container exits. It isn't started when `PRESENTON_ELECTRON` is set. | Upstream discards its output and never notices it dying or hanging, so `/mcp` answers 502 until the container is restarted, with nothing in the log. | Take upstream, re-apply the block. Keep it inline: upstream's `Dockerfile` copies only named files, so a new module imported from `start.js` would break its build. |
 | `servers/fastapi/openai_spec.json` | Regenerated; includes the canvas routes and every tool's input schema | MCP tools are built from this static file. | Never hand-merge (one line). The upstream-sync workflow resolves a spec-only conflict and regenerates automatically. By hand: take either side, then regenerate (below). |
 
 ### Regenerating `openai_spec.json`

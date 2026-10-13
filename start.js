@@ -634,19 +634,146 @@ const startServers = async (nginxReadyPromise) => {
   };
   watchManagedProcess("FastAPI", fastApiProcess, restartFastApi);
 
-  const appmcpProcess = spawn(
-    "python",
-    ["mcp_server.py", "--port", appmcpPort.toString()],
-    {
-      cwd: fastapiDir,
-      stdio: "ignore",
-      env: process.env,
-    }
+  // Fork: supervise the MCP server. Upstream starts it with its output
+  // discarded and never notices if it dies or hangs, so nginx answers /mcp
+  // with 502 until the container is restarted. Here its output goes to the
+  // container log, and it is restarted, with backoff, when it exits, isn't
+  // healthy within 2 minutes of starting, or misses 3 health probes in a row
+  // (no answer within 5 s, or a 5xx). After 10 failures without a healthy
+  // minute in between (e.g. port 8001 held by another process) the container
+  // exits, so Docker's restart policy takes over and the failure is visible.
+  const APPMCP_READY_TIMEOUT_MS = 120_000;
+  const APPMCP_PROBE_INTERVAL_MS = 30_000;
+  const APPMCP_PROBE_MISSES = 3;
+  const APPMCP_STABLE_MS = 60_000;
+  const APPMCP_MAX_FAILURES = 10;
+  // Same values as _is_truthy in utils/get_env.py, which mcp_server.py uses.
+  const isAppMcpEnabled = !["1", "true", "yes", "on"].includes(
+    String(process.env.PRESENTON_ELECTRON ?? "").trim().toLowerCase()
   );
+  let appmcpFailures = 0;
 
-  appmcpProcess.on("error", (err) => {
-    console.error("App MCP process failed to start:", err);
-  });
+  // Healthy means any non-5xx answer: a bare GET gets 401 with auth on and a
+  // 4xx from the MCP transport with auth off.
+  const probeAppMcp = () =>
+    new Promise((resolve) => {
+      const req = request(
+        { host: "127.0.0.1", port: appmcpPort, path: "/mcp", method: "GET", timeout: 5_000 },
+        (response) => {
+          response.resume();
+          req.destroy();
+          resolve(response.statusCode < 500);
+        }
+      );
+      req.once("error", () => resolve(false));
+      req.once("timeout", () => {
+        req.destroy();
+        resolve(false);
+      });
+      req.end();
+    });
+
+  const spawnAppMcpProcess = () => {
+    const appmcpProcess = spawn(
+      "python",
+      ["mcp_server.py", "--port", appmcpPort.toString()],
+      {
+        cwd: fastapiDir,
+        stdio: ["ignore", "inherit", "inherit"],
+        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      }
+    );
+    managedProcesses.add(appmcpProcess);
+    const isAlive = () =>
+      appmcpProcess.exitCode === null && appmcpProcess.signalCode === null;
+    let isDown = false;
+    let healthySince = null;
+    let probeTimer = null;
+    let killReason = null;
+
+    const killAppMcp = (reason) => {
+      if (killReason || !isAlive()) {
+        return;
+      }
+      killReason = reason;
+      appmcpProcess.kill("SIGKILL");
+    };
+
+    // Runs once per process, whether it fails to spawn or exits.
+    const onDown = (reason) => {
+      if (isDown) {
+        return;
+      }
+      isDown = true;
+      clearInterval(probeTimer);
+      managedProcesses.delete(appmcpProcess);
+      if (isShuttingDown) {
+        return;
+      }
+      if (healthySince !== null && Date.now() - healthySince >= APPMCP_STABLE_MS) {
+        appmcpFailures = 0;
+      }
+      appmcpFailures += 1;
+      if (appmcpFailures >= APPMCP_MAX_FAILURES) {
+        console.error(
+          `App MCP server ${reason}; ${appmcpFailures} failures in a row, exiting.`
+        );
+        shutdown(1);
+        return;
+      }
+      const delayMs = Math.min(1000 * 2 ** (appmcpFailures - 1), 60_000);
+      console.error(`App MCP server ${reason}; restarting in ${delayMs / 1000}s.`);
+      setTimeout(() => {
+        if (!isShuttingDown) {
+          spawnAppMcpProcess();
+        }
+      }, delayMs);
+    };
+
+    appmcpProcess.on("error", (err) => {
+      console.error("App MCP process error:", err);
+      // Without a pid it never started, and Node may not emit "close".
+      if (appmcpProcess.pid === undefined) {
+        onDown("failed to start");
+      }
+    });
+    appmcpProcess.on("close", (code, signal) => {
+      const status = `code: ${code}${signal ? `, signal: ${signal}` : ""}`;
+      onDown(killReason ? `${killReason} (${status})` : `exited (${status})`);
+    });
+
+    const readyDeadline = Date.now() + APPMCP_READY_TIMEOUT_MS;
+    const waitUntilHealthy = async () => {
+      while (!isDown && isAlive()) {
+        if (await probeAppMcp()) {
+          break;
+        }
+        if (Date.now() >= readyDeadline) {
+          killAppMcp(
+            `was not healthy on port ${appmcpPort} within ${APPMCP_READY_TIMEOUT_MS / 1000}s`
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+      if (isDown || !isAlive()) {
+        return;
+      }
+      healthySince = Date.now();
+      let misses = 0;
+      probeTimer = setInterval(async () => {
+        const isHealthy = await probeAppMcp();
+        misses = isHealthy ? 0 : misses + 1;
+        if (misses >= APPMCP_PROBE_MISSES) {
+          killAppMcp(`missed ${misses} health probes`);
+        }
+      }, APPMCP_PROBE_INTERVAL_MS);
+    };
+    waitUntilHealthy();
+  };
+  if (isAppMcpEnabled) {
+    spawnAppMcpProcess();
+  }
 
   let nextjsProcess = spawnNextjsProcess();
   const restartNextjs = () => {
