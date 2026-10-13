@@ -51,6 +51,7 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 | `.github/workflows/fork-docker.yml` | After `Test All Applications` passes on `main`, builds `Dockerfile.fork` natively on amd64 and arm64 (`ubuntu-24.04-arm`). Each architecture is smoke-tested and pushed by digest; the job then checks that the pushed manifest has exactly the tested image's layers. It publishes one manifest tagged `latest`, `<version>`, `<full version>` and `sha-<commit>`. Tags are gated on amd64; a failed arm64 publishes them amd64-only and warns on the `upstream-sync` issue. Only a build of `main`'s current head moves `latest` and the version tags; manual runs on other branches, and re-runs of older `main` test runs, publish only `sha-<commit>`. |
 | `.github/scripts/docker-smoke-test.sh` | Smoke test through nginx: MCP handshake and canvas tools, canvas API, web UI, PDF/PPTX export, offline OCR, offline mem0 embedding. |
 | `docker-compose.fork.yml` | Runs the published image on a server: no repo checkout, `.env` passthrough, healthcheck. |
+| `.github/README.md` | Fork overview that GitHub shows on the repo page instead of the root `README.md`, which stays upstream's. |
 
 ### Owner setup for the fork CI
 
