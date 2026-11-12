@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import {
-  AlertTriangle,
   CircleAlert,
   Loader2,
   LockKeyhole,
@@ -162,35 +161,33 @@ export function LegacyPresentationsTable({
           setShowDeleteDialog(open);
         }}
       >
-        <DialogContent className="w-full max-w-[392px] rounded-[24px] border-0 p-0 shadow-[0_24px_80px_rgba(15,23,42,0.18)] sm:max-w-[392px] [&>button]:hidden">
-          <DialogHeader className="items-center px-7 pb-5 pt-7 text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#FFF1F0]">
-              <AlertTriangle
-                className="h-6 w-6 text-[#F04438]"
-                aria-hidden="true"
-              />
-            </div>
+        <DialogContent
+          hideDefaultClose
+          overlayClassName="bg-black/40 backdrop-blur-[2px]"
+          className="w-[calc(100vw-32px)] max-w-[400px] gap-0 overflow-hidden rounded-2xl border border-neutral-200 bg-white p-0 font-syne shadow-xl sm:max-w-[400px]"
+        >
+          <DialogHeader className="items-start space-y-3 p-6 text-left sm:text-left">
             <DialogTitle
               id="delete-legacy-title"
-              className="font-syne text-[24px] font-medium leading-[30px] tracking-[-0.02em] text-[#191919]"
+              className="text-xl font-semibold leading-7 tracking-[-0.02em] text-neutral-900"
             >
               Delete legacy presentations?
             </DialogTitle>
             <DialogDescription
               id="delete-legacy-description"
-              className="max-w-[296px] pt-1 text-[15px] leading-6 text-[#667085]"
+              className="text-sm leading-6 text-neutral-500"
             >
               This will permanently delete all {presentations.length} legacy
               presentation{presentations.length === 1 ? "" : "s"}. This action
               cannot be undone.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="flex-row border-t border-[#EAECF0] p-0 sm:space-x-0">
+          <DialogFooter className="grid grid-cols-2 gap-3 px-6 pb-6 sm:grid sm:space-x-0">
             <button
               type="button"
               onClick={() => setShowDeleteDialog(false)}
               disabled={isDeleting}
-              className="h-[56px] flex-1 rounded-none rounded-bl-[24px] px-4 text-sm font-medium text-[#344054] transition-colors hover:bg-[#F9FAFB] disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-10 rounded-lg border border-neutral-200 bg-white px-4 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -198,7 +195,7 @@ export function LegacyPresentationsTable({
               type="button"
               onClick={() => void deleteLegacyPresentations()}
               disabled={isDeleting}
-              className="flex h-[56px] flex-1 items-center justify-center gap-2 rounded-none rounded-br-[24px] border-l border-[#EAECF0] px-4 text-sm font-medium text-[#F04438] transition-colors hover:bg-[#FFF5F5] disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex h-10 items-center justify-center gap-2 rounded-lg bg-neutral-900 px-4 text-sm font-medium text-white transition-colors hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isDeleting ? (
                 <>

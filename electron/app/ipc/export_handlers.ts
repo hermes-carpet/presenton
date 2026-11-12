@@ -11,7 +11,6 @@ import fs from "fs";
 import path from "path";
 
 import { showFileDownloadedDialog } from "../utils/dialog";
-import { v4 as uuidv4 } from 'uuid';
 import { ChildProcess, spawn } from "child_process";
 import { safeError, safeLog } from "../utils/safe-console";
 import { addMainBreadcrumb } from "../sentry/main";
@@ -90,14 +89,12 @@ export function setupExportHandlers() {
         cookieHeader: desktopCookieHeader(),
       };
 
-      const randomUuid = uuidv4();
       const tempDir = getTempDir();
       const appDataDir = getAppDataDir();
-      exportTempDir = path.join(tempDir, randomUuid);
-      await fs.promises.mkdir(exportTempDir, { recursive: true });
+      exportTempDir = await fs.promises.mkdtemp(path.join(tempDir, "export-"));
 
       const exportTaskPath = path.join(exportTempDir, "export_task.json");
-      await fs.promises.writeFile(exportTaskPath, JSON.stringify(exportTask));
+      await fs.promises.writeFile(exportTaskPath, JSON.stringify(exportTask), { flag: "wx", mode: 0o600 });
 
       const packagedExportRoot = path.join(resourceBaseDir, "resources", "export");
       const packagedExportScriptPath = path.join(packagedExportRoot, "runner.mjs");

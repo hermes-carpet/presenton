@@ -6,6 +6,7 @@ import {
 } from "@/components/slide-editor/text/template-v2-text";
 import { measureMathLatex } from "@/lib/math";
 import type {
+  BorderRadius,
   ChartType,
   Fill,
   Font,
@@ -26,7 +27,14 @@ import {
 const DEFAULT_CHART_INSERT_POSITION = { x: 128, y: 115 };
 const DEFAULT_CHART_INSERT_SIZE = { width: 717, height: 410 };
 const DEFAULT_INFOGRAPHIC_INSERT_POSITION = { x: 128, y: 170 };
-const DEFAULT_IMAGE_PLACEHOLDER_SRC = "/placeholder.jpg";
+const DEFAULT_IMAGE_PLACEHOLDER_SRC =
+  "/figma/presentation-actions/image-placeholder.svg";
+const IMAGE_PREVIEW_ASSETS = [
+  DEFAULT_IMAGE_PLACEHOLDER_SRC,
+  DEFAULT_IMAGE_PLACEHOLDER_SRC,
+  DEFAULT_IMAGE_PLACEHOLDER_SRC,
+  DEFAULT_IMAGE_PLACEHOLDER_SRC,
+] as const;
 const DEFAULT_MATH_INSERT_CENTER_X = 640;
 const DEFAULT_MATH_INSERT_CENTER_Y = 325;
 const TEXT_INSERT_HORIZONTAL_PADDING_PX = 8;
@@ -1582,7 +1590,17 @@ function createDefaultInfographicInsertElements(kind?: string): SlideElement[] {
     : [];
 }
 
-function makeSimpleTableElement(): SlideElement {
+type TablePreviewDefinition = {
+  name: string;
+  columns: string[];
+  rows: string[][];
+};
+
+function makeTableElement({
+  name,
+  columns,
+  rows,
+}: TablePreviewDefinition): SlideElement {
   const baseFont: Font = {
     family: "Manrope",
     size: 14,
@@ -1600,35 +1618,64 @@ function makeSimpleTableElement(): SlideElement {
   return {
     type: "table",
     position: { x: 122, y: 128 },
-    size: { width: 819, height: 186 },
-    columns: [
-      makeTableCell({ text: "Metric", font: headerFont, color: headerFill }),
-      makeTableCell({ text: "Current", font: headerFont, color: headerFill }),
-      makeTableCell({ text: "Target", font: headerFont, color: headerFill }),
-    ],
-    rows: [
-      [
-        makeTableCell({ text: "Activation", font: baseFont, color: bodyFill }),
-        makeTableCell({ text: "68%", font: baseFont, color: bodyFill }),
-        makeTableCell({ text: "75%", font: baseFont, color: bodyFill }),
-      ],
-      [
-        makeTableCell({ text: "Retention", font: baseFont, color: bodyFill }),
-        makeTableCell({ text: "42%", font: baseFont, color: bodyFill }),
-        makeTableCell({ text: "50%", font: baseFont, color: bodyFill }),
-      ],
-    ],
+    size: { width: 819, height: 58 + rows.length * 64 },
+    columns: columns.map((text) =>
+      makeTableCell({ text, font: headerFont, color: headerFill }),
+    ),
+    rows: rows.map((row) =>
+      row.map((text) =>
+        makeTableCell({ text, font: baseFont, color: bodyFill }),
+      ),
+    ),
     min_columns: 2,
     max_columns: 6,
     min_rows: 2,
     max_rows: 8,
     decorative: false,
-    name: "simple_table",
+    name,
   };
 }
 
 function createDefaultTableInsertElements(kind?: string): SlideElement[] {
-  return kind === "simple-table" ? [makeSimpleTableElement()] : [];
+  const definitions: Record<string, TablePreviewDefinition> = {
+    "simple-table": {
+      name: "simple_table",
+      columns: ["Metric", "Current", "Target"],
+      rows: [
+        ["Activation", "68%", "75%"],
+        ["Retention", "42%", "50%"],
+      ],
+    },
+    "comparison-table": {
+      name: "comparison_table",
+      columns: ["Feature", "Starter", "Pro"],
+      rows: [
+        ["Storage", "10 GB", "100 GB"],
+        ["Collaboration", "3 seats", "Unlimited"],
+        ["Support", "Email", "Priority"],
+      ],
+    },
+    "project-table": {
+      name: "project_tracker_table",
+      columns: ["Task", "Owner", "Status", "Due"],
+      rows: [
+        ["Research", "Maya", "Done", "Jun 4"],
+        ["Prototype", "Leo", "In progress", "Jun 12"],
+        ["Launch", "Nina", "Planned", "Jun 24"],
+      ],
+    },
+    "metrics-table": {
+      name: "metrics_table",
+      columns: ["KPI", "This month", "Change"],
+      rows: [
+        ["Revenue", "$128K", "+18%"],
+        ["Conversion", "7.4%", "+1.2%"],
+        ["Retention", "91%", "+4%"],
+      ],
+    },
+  };
+  const definition = kind ? definitions[kind] : undefined;
+  return definition ? [makeTableElement(definition)] : [];
 }
 
 function makeImageElement({
@@ -1637,28 +1684,392 @@ function makeImageElement({
   width,
   height,
   name = "image",
+  src = DEFAULT_IMAGE_PLACEHOLDER_SRC,
+  borderRadius = IMAGE_RADIUS,
+  clipPath,
 }: {
   x: number;
   y: number;
   width: number;
   height: number;
   name?: string;
+  src?: string;
+  borderRadius?: BorderRadius;
+  clipPath?: string;
 }): SlideElement {
   return {
     type: "image",
     position: { x, y },
     size: { width, height },
-    data: DEFAULT_IMAGE_PLACEHOLDER_SRC,
+    data: src,
     fit: "cover",
     decorative: false,
     name,
     is_icon: false,
-    border_radius: IMAGE_RADIUS,
+    border_radius: borderRadius,
+    ...(clipPath ? { clippath: clipPath } : {}),
   };
+}
+
+const ZERO_IMAGE_RADIUS: BorderRadius = { tl: 0, tr: 0, bl: 0, br: 0 };
+
+function makeImageInsertComponent({
+  description,
+  elements,
+  height,
+  id,
+  width,
+}: {
+  description: string;
+  elements: SlideElement[];
+  height: number;
+  id: string;
+  width: number;
+}): EditorInsertContent {
+  return {
+    components: [
+      {
+        id,
+        description,
+        position: {
+          x: (1280 - width) / 2,
+          y: (720 - height) / 2,
+        },
+        elements,
+      },
+    ],
+  };
+}
+
+function makeImageFrameVector({
+  fill = null,
+  height,
+  stroke = null,
+  width,
+  x = 0,
+  y = 0,
+}: {
+  fill?: Fill | null;
+  height: number;
+  stroke?: Stroke | null;
+  width: number;
+  x?: number;
+  y?: number;
+}) {
+  return makeVector({
+    points: rectangleVectorPoints(x, y, width, height),
+    fill,
+    stroke,
+  });
+}
+
+function makeImageFrameLine(
+  points: Array<{ x: number; y: number }>,
+  stroke: Stroke,
+) {
+  return makeVector({ points, closed: false, fill: null, stroke });
 }
 
 function createDefaultImageInsertContent(kind?: string): EditorInsertContent {
   switch (kind) {
+    case "image-frame-square":
+      return makeImageInsertComponent({
+        id: "image_frame_square",
+        description: "Square image frame",
+        width: 420,
+        height: 420,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 420,
+            height: 420,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            src: IMAGE_PREVIEW_ASSETS[0],
+          }),
+        ],
+      });
+    case "image-frame-rounded":
+      return makeImageInsertComponent({
+        id: "image_frame_rounded",
+        description: "Rounded square image frame",
+        width: 420,
+        height: 420,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 420,
+            height: 420,
+            borderRadius: { tl: 72, tr: 72, bl: 72, br: 72 },
+            src: IMAGE_PREVIEW_ASSETS[1],
+          }),
+        ],
+      });
+    case "image-frame-circle":
+      return makeImageInsertComponent({
+        id: "image_frame_circle",
+        description: "Circular image frame",
+        width: 420,
+        height: 420,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 420,
+            height: 420,
+            borderRadius: { tl: 210, tr: 210, bl: 210, br: 210 },
+            clipPath: "circle(50% at 50% 50%)",
+            src: IMAGE_PREVIEW_ASSETS[2],
+          }),
+        ],
+      });
+    case "image-frame-pentagon":
+      return makeImageInsertComponent({
+        id: "image_frame_pentagon",
+        description: "Pentagon image frame",
+        width: 450,
+        height: 430,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 450,
+            height: 430,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            clipPath:
+              "polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%)",
+            src: IMAGE_PREVIEW_ASSETS[3],
+          }),
+        ],
+      });
+    case "image-frame-polaroid":
+      return makeImageInsertComponent({
+        id: "image_frame_polaroid",
+        description: "Polaroid-style image frame",
+        width: 440,
+        height: 520,
+        elements: [
+          makeImageFrameVector({
+            width: 440,
+            height: 520,
+            fill: { color: "F7F4EC", opacity: 1 },
+            stroke: { color: "D0D0D0", width: 2 },
+          }),
+          makeImageElement({
+            x: 24,
+            y: 24,
+            width: 392,
+            height: 406,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            src: IMAGE_PREVIEW_ASSETS[0],
+          }),
+        ],
+      });
+    case "image-frame-torn":
+      return makeImageInsertComponent({
+        id: "image_frame_torn",
+        description: "Torn-paper image frame",
+        width: 560,
+        height: 410,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 410,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            clipPath:
+              "polygon(0% 6%, 7% 2%, 14% 5%, 21% 1%, 29% 5%, 37% 2%, 45% 6%, 54% 2%, 63% 5%, 72% 1%, 81% 5%, 90% 2%, 100% 6%, 98% 94%, 91% 98%, 83% 95%, 74% 99%, 65% 95%, 56% 98%, 47% 94%, 38% 99%, 28% 95%, 19% 98%, 10% 94%, 2% 97%)",
+            src: IMAGE_PREVIEW_ASSETS[1],
+          }),
+        ],
+      });
+    case "image-filmstrip": {
+      const frameStroke: Stroke = { color: "111111", width: 1 };
+      return makeImageInsertComponent({
+        id: "image_filmstrip",
+        description: "Three-image film strip",
+        width: 850,
+        height: 300,
+        elements: [
+          makeImageFrameVector({
+            width: 850,
+            height: 300,
+            fill: { color: "111111", opacity: 1 },
+          }),
+          ...IMAGE_PREVIEW_ASSETS.slice(0, 3).map((src, index) =>
+            makeImageElement({
+              x: 30 + index * 275,
+              y: 48,
+              width: 240,
+              height: 204,
+              name: `film_image_${index + 1}`,
+              borderRadius: ZERO_IMAGE_RADIUS,
+              src,
+            }),
+          ),
+          makeImageFrameLine(
+            [
+              { x: 18, y: 24 },
+              { x: 832, y: 24 },
+            ],
+            { ...frameStroke, dash: [12, 12] },
+          ),
+          makeImageFrameLine(
+            [
+              { x: 18, y: 276 },
+              { x: 832, y: 276 },
+            ],
+            { ...frameStroke, dash: [12, 12] },
+          ),
+        ],
+      });
+    }
+    case "image-petal-grid": {
+      const size = 238;
+      const gap = 18;
+      const petalRadii: BorderRadius[] = [
+        { tl: 120, tr: 0, bl: 0, br: 120 },
+        { tl: 0, tr: 120, bl: 120, br: 0 },
+        { tl: 0, tr: 120, bl: 120, br: 0 },
+        { tl: 120, tr: 0, bl: 0, br: 120 },
+      ];
+      return makeImageInsertComponent({
+        id: "image_petal_grid",
+        description: "Four-image petal collage",
+        width: size * 2 + gap,
+        height: size * 2 + gap,
+        elements: IMAGE_PREVIEW_ASSETS.map((src, index) =>
+          makeImageElement({
+            x: (index % 2) * (size + gap),
+            y: Math.floor(index / 2) * (size + gap),
+            width: size,
+            height: size,
+            name: `petal_image_${index + 1}`,
+            borderRadius: petalRadii[index],
+            src,
+          }),
+        ),
+      });
+    }
+    case "image-frame-clover":
+      return makeImageInsertComponent({
+        id: "image_frame_clover",
+        description: "Clover-shaped image frame",
+        width: 450,
+        height: 450,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 450,
+            height: 450,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            clipPath:
+              "path('M225 40 C275 0 340 0 340 90 C430 90 450 150 410 225 C450 300 430 360 340 360 C340 450 275 450 225 410 C175 450 110 450 110 360 C20 360 0 300 40 225 C0 150 20 90 110 90 C110 0 175 0 225 40 Z')",
+            src: IMAGE_PREVIEW_ASSETS[2],
+          }),
+        ],
+      });
+    case "image-circle-triptych":
+      return makeImageInsertComponent({
+        id: "image_circle_triptych",
+        description: "Three overlapping circular images",
+        width: 660,
+        height: 300,
+        elements: IMAGE_PREVIEW_ASSETS.slice(0, 3).map((src, index) =>
+          makeImageElement({
+            x: index * 180,
+            y: 0,
+            width: 300,
+            height: 300,
+            name: `circle_image_${index + 1}`,
+            borderRadius: { tl: 150, tr: 150, bl: 150, br: 150 },
+            clipPath: "circle(50% at 50% 50%)",
+            src,
+          }),
+        ),
+      });
+    case "image-triple-strip":
+      return makeImageInsertComponent({
+        id: "image_triple_strip",
+        description: "Three equal images in a horizontal strip",
+        width: 840,
+        height: 360,
+        elements: IMAGE_PREVIEW_ASSETS.slice(0, 3).map((src, index) =>
+          makeImageElement({
+            x: index * 285,
+            y: 0,
+            width: 270,
+            height: 360,
+            name: `strip_image_${index + 1}`,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            src,
+          }),
+        ),
+      });
+    case "image-starburst":
+      return makeImageInsertComponent({
+        id: "image_starburst",
+        description: "Starburst image frame",
+        width: 480,
+        height: 480,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 480,
+            height: 480,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            clipPath:
+              "polygon(50% 0%, 58% 19%, 72% 6%, 74% 27%, 93% 18%, 83% 37%, 100% 50%, 81% 58%, 94% 72%, 73% 74%, 82% 93%, 63% 83%, 50% 100%, 42% 81%, 28% 94%, 26% 73%, 7% 82%, 17% 63%, 0% 50%, 19% 42%, 6% 28%, 27% 26%, 18% 7%, 37% 17%)",
+            src: IMAGE_PREVIEW_ASSETS[3],
+          }),
+        ],
+      });
+    case "image-frame-stamp":
+      return makeImageInsertComponent({
+        id: "image_frame_stamp",
+        description: "Postage-stamp image frame",
+        width: 450,
+        height: 540,
+        elements: [
+          makeImageElement({
+            x: 18,
+            y: 18,
+            width: 414,
+            height: 504,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            src: IMAGE_PREVIEW_ASSETS[0],
+          }),
+          makeImageFrameVector({
+            x: 8,
+            y: 8,
+            width: 434,
+            height: 524,
+            stroke: { color: "D5D8E0", width: 8, dash: [10, 8] },
+          }),
+        ],
+      });
+    case "image-vertical-stack":
+      return makeImageInsertComponent({
+        id: "image_vertical_stack",
+        description: "Two vertically stacked images",
+        width: 420,
+        height: 520,
+        elements: IMAGE_PREVIEW_ASSETS.slice(0, 2).map((src, index) =>
+          makeImageElement({
+            x: 0,
+            y: index * 264,
+            width: 420,
+            height: 256,
+            name: `stack_image_${index + 1}`,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            src,
+          }),
+        ),
+      });
     case "image":
       return {
         elements: [
@@ -1678,7 +2089,13 @@ function createDefaultImageInsertContent(kind?: string): EditorInsertContent {
             description: "Image with heading and supporting text",
             position: { x: 122, y: 128 },
             elements: [
-              makeImageElement({ x: 0, y: 0, width: 486, height: 371 }),
+              makeImageElement({
+                x: 0,
+                y: 0,
+                width: 486,
+                height: 371,
+                src: IMAGE_PREVIEW_ASSETS[1],
+              }),
               makeTextElement({
                 name: "image_heading",
                 text: "Add a heading",
@@ -1718,6 +2135,7 @@ function createDefaultImageInsertContent(kind?: string): EditorInsertContent {
                 width: 346,
                 height: 211,
                 name: "image_1",
+                src: IMAGE_PREVIEW_ASSETS[0],
               }),
               makeImageElement({
                 x: 371,
@@ -1725,6 +2143,7 @@ function createDefaultImageInsertContent(kind?: string): EditorInsertContent {
                 width: 346,
                 height: 211,
                 name: "image_2",
+                src: IMAGE_PREVIEW_ASSETS[1],
               }),
               makeImageElement({
                 x: 0,
@@ -1732,6 +2151,7 @@ function createDefaultImageInsertContent(kind?: string): EditorInsertContent {
                 width: 346,
                 height: 211,
                 name: "image_3",
+                src: IMAGE_PREVIEW_ASSETS[2],
               }),
               makeImageElement({
                 x: 371,
@@ -1739,11 +2159,179 @@ function createDefaultImageInsertContent(kind?: string): EditorInsertContent {
                 width: 346,
                 height: 211,
                 name: "image_4",
+                src: IMAGE_PREVIEW_ASSETS[3],
               }),
             ],
           },
         ],
       };
+    case "image-caption":
+      return {
+        components: [
+          {
+            id: "image_caption",
+            description: "Wide image with a concise caption",
+            position: { x: 166, y: 112 },
+            elements: [
+              makeImageElement({
+                x: 0,
+                y: 0,
+                width: 690,
+                height: 338,
+                src: IMAGE_PREVIEW_ASSETS[2],
+              }),
+              makeTextElement({
+                name: "image_caption_text",
+                text: "A focused team turns customer insight into action.",
+                x: 0,
+                y: 356,
+                width: 690,
+                height: 50,
+                size: 16,
+                color: "475467",
+                lineHeight: 1.25,
+              }),
+            ],
+          },
+        ],
+      };
+    case "image-split":
+      return {
+        components: [
+          {
+            id: "image_split",
+            description: "Two balanced images",
+            position: { x: 126, y: 120 },
+            elements: [
+              makeImageElement({
+                x: 0,
+                y: 0,
+                width: 350,
+                height: 410,
+                name: "image_left",
+                src: IMAGE_PREVIEW_ASSETS[1],
+              }),
+              makeImageElement({
+                x: 374,
+                y: 0,
+                width: 350,
+                height: 410,
+                name: "image_right",
+                src: IMAGE_PREVIEW_ASSETS[3],
+              }),
+            ],
+          },
+        ],
+      };
+    case "image-collage":
+      return {
+        components: [
+          {
+            id: "image_collage",
+            description: "One feature image with two supporting images",
+            position: { x: 126, y: 120 },
+            elements: [
+              makeImageElement({
+                x: 0,
+                y: 0,
+                width: 458,
+                height: 410,
+                name: "image_feature",
+                src: IMAGE_PREVIEW_ASSETS[0],
+              }),
+              makeImageElement({
+                x: 482,
+                y: 0,
+                width: 242,
+                height: 193,
+                name: "image_top",
+                src: IMAGE_PREVIEW_ASSETS[2],
+              }),
+              makeImageElement({
+                x: 482,
+                y: 217,
+                width: 242,
+                height: 193,
+                name: "image_bottom",
+                src: IMAGE_PREVIEW_ASSETS[3],
+              }),
+            ],
+          },
+        ],
+      };
+    case "image-frame-ornate": {
+      const frameStroke: Stroke = { color: "50545C", width: 3 };
+      return makeImageInsertComponent({
+        id: "image_frame_ornate",
+        description: "Image with decorative corner frame",
+        width: 480,
+        height: 560,
+        elements: [
+          makeImageElement({
+            x: 18,
+            y: 18,
+            width: 444,
+            height: 524,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            src: IMAGE_PREVIEW_ASSETS[1],
+          }),
+          makeImageFrameVector({
+            x: 8,
+            y: 8,
+            width: 464,
+            height: 544,
+            stroke: frameStroke,
+          }),
+          makeImageFrameLine(
+            [
+              { x: 8, y: 68 },
+              { x: 68, y: 8 },
+            ],
+            frameStroke,
+          ),
+          makeImageFrameLine(
+            [
+              { x: 412, y: 8 },
+              { x: 472, y: 68 },
+            ],
+            frameStroke,
+          ),
+          makeImageFrameLine(
+            [
+              { x: 8, y: 492 },
+              { x: 68, y: 552 },
+            ],
+            frameStroke,
+          ),
+          makeImageFrameLine(
+            [
+              { x: 412, y: 552 },
+              { x: 472, y: 492 },
+            ],
+            frameStroke,
+          ),
+        ],
+      });
+    }
+    case "image-frame-torn-bottom":
+      return makeImageInsertComponent({
+        id: "image_frame_torn_bottom",
+        description: "Image frame with a torn lower edge",
+        width: 500,
+        height: 520,
+        elements: [
+          makeImageElement({
+            x: 0,
+            y: 0,
+            width: 500,
+            height: 520,
+            borderRadius: ZERO_IMAGE_RADIUS,
+            clipPath:
+              "polygon(0% 0%, 100% 0%, 100% 88%, 92% 91%, 84% 87%, 75% 94%, 66% 89%, 57% 98%, 48% 91%, 39% 96%, 30% 88%, 21% 93%, 12% 87%, 0% 92%)",
+            src: IMAGE_PREVIEW_ASSETS[2],
+          }),
+        ],
+      });
     default:
       return {};
   }

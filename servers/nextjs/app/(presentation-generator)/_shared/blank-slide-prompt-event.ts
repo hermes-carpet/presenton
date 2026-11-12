@@ -10,3 +10,8 @@ export type BlankSlidePromptEventDetail = {
   promptKind?: "blank" | "layout";
   layout?: TemplateV2Layout | null;
 };
+
+export type BlankSlidePromptRequest = {
+  id: number;
+  detail: BlankSlidePromptEventDetail;
+};

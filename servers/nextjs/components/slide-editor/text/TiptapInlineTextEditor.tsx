@@ -271,6 +271,10 @@ const TIPTAP_EXTENSIONS = [
     blockquote: false,
     codeBlock: false,
     horizontalRule: false,
+    underline: false,
+    link: false,
+    listKeymap: false,
+    trailingNode: false,
   }),
   Underline,
   RunStyle,
@@ -399,6 +403,7 @@ export function TiptapInlineTextEditor({
     extensions: TIPTAP_EXTENSIONS,
     content: initialContent,
     immediatelyRender: false,
+    shouldRerenderOnTransaction: true,
     editorProps: {
       attributes: {
         class: "template-v2-tiptap-inline-prosemirror",
@@ -495,7 +500,7 @@ export function TiptapInlineTextEditor({
     const { from, to } = editor.state.selection;
     lastEmittedSignatureRef.current = contentSignature;
     syncedContentSignatureRef.current = contentSignature;
-    editor.commands.setContent(content, false);
+    editor.commands.setContent(content, { emitUpdate: false });
     const maxPosition = Math.max(1, editor.state.doc.content.size);
     editor.commands.setTextSelection({
       from: clampPosition(from, maxPosition),

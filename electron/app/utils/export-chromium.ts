@@ -331,7 +331,7 @@ async function materializeBundledChromiumForMsix(bundledExePath: string): Promis
   await fs.promises.rm(cacheRoot, { recursive: true, force: true });
   await fs.promises.mkdir(path.dirname(destRevisionDir), { recursive: true });
   await fs.promises.cp(revisionDir, destRevisionDir, { recursive: true });
-  await fs.promises.writeFile(stampPath, sourceStamp, "utf8");
+  await fs.promises.writeFile(stampPath, sourceStamp, { encoding: "utf8", flag: "wx", mode: 0o600 });
 
   if (!isMaterializedChromiumComplete(destExe)) {
     throw new Error(`Chrome executable missing after MSIX materialization: ${destExe}`);

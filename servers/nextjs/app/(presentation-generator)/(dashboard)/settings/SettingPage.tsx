@@ -9,6 +9,7 @@ import {
   handleSaveLLMConfig,
 } from "@/utils/storeHelpers";
 import { isOllamaModelAvailable } from "@/utils/providerUtils";
+import { providerSetupNavigationAction } from "@/lib/provider-setup-navigation";
 import { useRouter, usePathname } from "next/navigation";
 import { LLMConfig } from "@/types/llm_config";
 import { trackEvent, MixpanelEvent } from "@/utils/mixpanel";
@@ -51,7 +52,7 @@ const SettingsPage = () => {
   const [llmConfig, setLlmConfig] = useState<LLMConfig>(
     userConfigState.llm_config
   );
-  const canChangeKeys = userConfigState.can_change_keys;
+  const isAdmin = userConfigState.role === "admin";
   const [buttonState, setButtonState] = useState<ButtonState>({
     isLoading: false,
     isDisabled: false,
@@ -254,12 +255,12 @@ const SettingsPage = () => {
   };
 
   useEffect(() => {
-    if (!canChangeKeys) {
+    if (!isAdmin) {
       router.push("/dashboard");
     }
-  }, [canChangeKeys, router]);
+  }, [isAdmin, router]);
 
-  if (!canChangeKeys) {
+  if (!isAdmin) {
     return null;
   }
 
@@ -372,12 +373,12 @@ const SettingsPage = () => {
         const href = link.getAttribute("href");
         const targetAttr = link.getAttribute("target");
 
-        if (
-          href &&
-          href !== "#" &&
-          !href.startsWith("javascript:") &&
-          targetAttr !== "_blank"
-        ) {
+        const action = providerSetupNavigationAction(href, targetAttr, window.location.href);
+        if (action === "block") {
+          e.preventDefault();
+          return;
+        }
+        if (action === "warn") {
 
           notify.warning(
             "Provider setup required",
@@ -418,12 +419,13 @@ const SettingsPage = () => {
     <div className="relative flex h-screen flex-col overflow-hidden font-syne">
       <main className="mx-auto flex min-h-0 w-full flex-1 gap-6 overflow-hidden">
         <SettingSideBar
+          className={selectedProvider === "admin" ? "max-md:hidden" : ""}
           selectedProvider={selectedProvider}
           setSelectedProvider={selectSettingsSection}
           presentonSelected={llmConfig.LLM === "presenton"}
         />
-        <div className="custom_scrollbar min-h-0 w-full flex-1 overflow-y-auto pb-36 pr-5">
-          <div className="sticky right-0 top-0 z-40 mb-4 bg-white/90 py-[28px] backdrop-blur">
+        <div className={`custom_scrollbar min-h-0 min-w-0 w-full flex-1 overflow-y-auto pb-36 pr-5 ${selectedProvider === "admin" ? "max-md:pl-4 max-md:pr-4" : ""}`}>
+          {selectedProvider !== "admin" && <div className="sticky right-0 top-0 z-40 mb-4 bg-white/90 py-[28px] backdrop-blur">
             <div className="flex  gap-3 items-center ">
               <h3 className=" text-[28px] tracking-[-0.84px] font-syne font-normal text-black flex items-center gap-2">
                 Settings
@@ -432,7 +434,7 @@ const SettingsPage = () => {
                 {textSummary} · {imageSummary} · {webSearchSummary}
               </p>
             </div>
-          </div>
+          </div>}
 
           {!llmConfig.LLM && selectedProvider === "text-provider" && (
             <div
@@ -446,16 +448,28 @@ const SettingsPage = () => {
             </div>
           )}
 
-          {selectedProvider === 'text-provider' && <TextProvider
-            onInputChange={handleTextProviderInputChange}
-            llmConfig={llmConfig}
-          />}
-          {selectedProvider === 'image-provider' && llmConfig.LLM !== "presenton" && <ImageProvider llmConfig={llmConfig} setLlmConfig={setLlmConfig} />}
-          {selectedProvider === 'web-search-provider' && llmConfig.LLM !== "presenton" && <WebSearchProvider llmConfig={llmConfig} setLlmConfig={setLlmConfig} />}
-          {selectedProvider === 'privacy' && <PrivacySettings />}
-          {selectedProvider === "admin" && <AdminPanel embedded />}
+          {selectedProvider === 'text-provider' && (
+            <div className="motion-fade">
+              <TextProvider
+                onInputChange={handleTextProviderInputChange}
+                llmConfig={llmConfig}
+              />
+            </div>
+          )}
+          {selectedProvider === 'image-provider' && llmConfig.LLM !== "presenton" && (
+            <div className="motion-fade">
+              <ImageProvider llmConfig={llmConfig} setLlmConfig={setLlmConfig} />
+            </div>
+          )}
+          {selectedProvider === 'web-search-provider' && llmConfig.LLM !== "presenton" && (
+            <div className="motion-fade">
+              <WebSearchProvider llmConfig={llmConfig} setLlmConfig={setLlmConfig} />
+            </div>
+          )}
+          {selectedProvider === 'privacy' && <div className="motion-fade"><PrivacySettings /></div>}
+          {selectedProvider === "admin" && <div className="pt-7"><AdminPanel embedded onBackToSettings={() => selectSettingsSection("text-provider")} /></div>}
           {selectedProvider === "session" && (
-            <div className="w-full max-w-lg space-y-5 rounded-[20px] border border-[#EDEEEF] bg-white p-7">
+            <div className="motion-fade w-full max-w-lg space-y-5 rounded-[20px] border border-[#EDEEEF] bg-white p-7">
               <div>
                 <h4 className="font-syne text-lg font-normal text-black">Sign out</h4>
                 <p className="mt-2 font-syne text-sm leading-relaxed text-[#494A4D]">
@@ -483,7 +497,7 @@ const SettingsPage = () => {
                 "linear-gradient(270deg, #D5CAFC 2.4%, #E3D2EB 27.88%, #F4DCD3 69.23%, #FDE4C2 100%)",
               color: "#101323",
             }}
-            className={`w-full font-syne font-semibold flex items-center justify-center gap-2 py-3 px-5 rounded-[58px] transition-all duration-500 ${buttonState.isDisabled
+            className={`motion-press group w-full font-syne font-semibold flex items-center justify-center gap-2 py-3 px-5 rounded-[58px] ${buttonState.isDisabled
               ? "bg-gray-400 cursor-not-allowed"
               : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 focus:ring-4 focus:ring-blue-200"
               } text-white`}
@@ -496,7 +510,7 @@ const SettingsPage = () => {
             ) : (
               buttonState.text
             )}
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="motion-arrow w-4 h-4" />
           </button>
         </div>
       ) : null}

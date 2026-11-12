@@ -67,12 +67,16 @@ test("Docker and Electron use the same pinned presentation export", async () => 
     electronPackage.exportVersion,
     rootPackage.presentationExportVersion,
   );
-  assert.match(dockerfile, /COPY package\.json \/app\//);
+  assert.match(dockerfile, /COPY package\.json package-lock\.json \/app\//);
   assert.match(
     dockerfile,
     /sync-presentation-export\.cjs --force/,
   );
   assert.match(dockerfileDev, /COPY package\.json package-lock\.json \/app\//);
+  assert.match(dockerfile, /cp \/app\/package\.json \/app\/package-lock\.json \/app\/document-extraction-liteparse\//);
+  assert.match(dockerfile, /npm --prefix \/app\/document-extraction-liteparse ci --omit=dev/);
+  assert.match(dockerfileDev, /RUN node \/app\/scripts\/sync-document-dependencies\.cjs/);
+  for (const source of [dockerfile, dockerfileDev]) assert.doesNotMatch(source, /npm install @llamaindex\/liteparse/);
   assert.match(
     dockerfileDev,
     /sync-presentation-export\.cjs --force/,
@@ -86,7 +90,7 @@ test("Docker and Electron use the same pinned presentation export", async () => 
     2,
   );
   assert.match(
-    dockerCompose,
+    dockerCompose.replace(/\r\n/g, "\n"),
     /\nvolumes:\n(?:  .+\n)*  presenton_presentation_export:\n/,
   );
 });

@@ -613,7 +613,9 @@ function fontFamilyLoadDescriptors(family: string) {
 }
 
 function fontFamilyFromFontDescriptor(descriptor: string) {
-  const match = descriptor.match(/"((?:\\.|[^"])*)"\s*$/);
+  // Generated descriptors contain one quoted family. Anchor its opening quote
+  // so malformed escaped quotes cannot restart a scan at every quote.
+  const match = descriptor.match(/^[^"]*"((?:\\.|[^"\\])*)"\s*$/);
   return match ? match[1].replace(/\\(["\\])/g, "$1") : null;
 }
 

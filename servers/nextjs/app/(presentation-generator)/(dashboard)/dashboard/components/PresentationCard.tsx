@@ -3,7 +3,7 @@ import React from "react";
 
 import { Card } from "@/components/ui/card";
 import { DashboardApi } from "@/app/(presentation-generator)/services/api/dashboard";
-import { Archive, AlertTriangle, Copy, EllipsisVertical, Loader2, Trash } from "lucide-react";
+import { Archive, Copy, EllipsisVertical, Loader2, Trash } from "lucide-react";
 import {
   Popover,
   PopoverTrigger,
@@ -131,10 +131,10 @@ export const PresentationCard = ({
         onClick={handlePreview}
         aria-disabled={isUnsupported}
         title={isUnsupported ? "Unsupported in this version of Presenton" : undefined}
-        className={`bg-[#F8FBFB] font-syne relative shadow-none sm:shadow-none presentation-card rounded-[12px] p-0 group transition-all duration-500 slide-theme overflow-hidden flex flex-col ${
+        className={`bg-[#F8FBFB] font-syne relative shadow-none sm:shadow-none presentation-card rounded-[12px] p-0 group slide-theme overflow-hidden flex flex-col ${
           isUnsupported
             ? "cursor-not-allowed border-[#EDEEEF]"
-            : "cursor-pointer hover:shadow-md"
+            : "motion-card cursor-pointer hover:shadow-md"
         }`}
       >
      
@@ -223,7 +223,7 @@ export const PresentationCard = ({
                   </button>
                 )}
                 <button
-                  className="flex w-full items-center justify-between rounded-[6px] px-2 py-1 text-[#D92D20] transition-colors hover:bg-[#FEF3F2]"
+                  className="flex w-full items-center justify-between rounded-[6px] px-2 py-1 text-neutral-700 transition-colors hover:bg-neutral-100"
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -251,44 +251,27 @@ export const PresentationCard = ({
       >
         <DialogContent
           hideDefaultClose
-          overlayClassName="z-[100] bg-[#101828]/55 backdrop-blur-[3px]"
-          className="z-[101] w-[calc(100vw-32px)] max-w-[420px] gap-0 overflow-hidden rounded-[24px] border-0 bg-white p-0 font-syne shadow-[0_28px_90px_rgba(15,23,42,0.24)] sm:max-w-[420px]"
+          overlayClassName="z-[100] bg-black/40 backdrop-blur-[2px]"
+          className="z-[101] w-[calc(100vw-32px)] max-w-[400px] gap-0 overflow-hidden rounded-2xl border border-neutral-200 bg-white p-0 font-syne shadow-xl sm:max-w-[400px]"
         >
-          <DialogHeader className="items-center px-7 pb-6 pt-8 text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#FEE4E2] ring-8 ring-[#FEF3F2]">
-              <AlertTriangle
-                className="h-6 w-6 text-[#D92D20]"
-                strokeWidth={1.8}
-                aria-hidden="true"
-              />
-            </div>
-            <DialogTitle className="text-[22px] font-semibold leading-7 tracking-[-0.02em] text-[#B42318]">
+          <DialogHeader className="items-start space-y-3 p-6 text-left sm:text-left">
+            <DialogTitle className="text-xl font-semibold leading-7 tracking-[-0.02em] text-neutral-900">
               Delete presentation?
             </DialogTitle>
-            <DialogDescription asChild>
-              <div className="w-full pt-2 text-sm leading-6 text-[#667085]">
-                <p>This will permanently delete the presentation below.</p>
-                <div
-                  className="mt-4 rounded-[12px] border border-[#FECDCA] bg-[#FFFBFA] px-4 py-3 text-left"
-                  title={title || "Untitled presentation"}
-                >
-                  <p className="line-clamp-2 break-words text-sm font-medium leading-5 text-[#7A271A]">
-                    {title || "Untitled presentation"}
-                  </p>
-                </div>
-                <p className="mt-3 text-[13px] font-medium text-[#D92D20]">
-                  This action cannot be undone.
-                </p>
-              </div>
+            <DialogDescription className="w-full break-words text-sm leading-6 text-neutral-500">
+              <span className="font-medium text-neutral-800">
+                &ldquo;{title || "Untitled presentation"}&rdquo;
+              </span>{" "}
+              will be permanently deleted. This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
 
-          <DialogFooter className="grid grid-cols-2 gap-3 border-t border-[#FEE4E2] bg-[#FFFBFA] p-4 sm:grid sm:space-x-0">
+          <DialogFooter className="grid grid-cols-2 gap-3 px-6 pb-6 sm:grid sm:space-x-0">
             <button
               type="button"
               onClick={() => setShowDeleteDialog(false)}
               disabled={isDeleting}
-              className="h-11 rounded-[10px] border border-[#D0D5DD] bg-white px-4 text-sm font-medium text-[#344054] shadow-sm transition-colors hover:bg-[#F9FAFB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/30 disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-10 rounded-lg border border-neutral-200 bg-white px-4 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -296,7 +279,7 @@ export const PresentationCard = ({
               type="button"
               onClick={() => void handleDelete()}
               disabled={isDeleting}
-              className="flex h-11 items-center justify-center gap-2 rounded-[10px] bg-[#D92D20] px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-[#B42318] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D92D20]/30 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex h-10 items-center justify-center gap-2 rounded-lg bg-neutral-900 px-4 text-sm font-medium text-white transition-colors hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isDeleting ? (
                 <>
@@ -304,10 +287,7 @@ export const PresentationCard = ({
                   Deleting...
                 </>
               ) : (
-                <>
-                  <Trash className="h-4 w-4" aria-hidden="true" />
-                  Delete
-                </>
+                "Delete"
               )}
             </button>
           </DialogFooter>

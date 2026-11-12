@@ -1,4 +1,8 @@
 import asyncio
+import json
+from unittest.mock import patch
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,7 +22,15 @@ from services.presenton_cloud import store_presenton_credentials
 from utils.get_env import get_presenton_oauth_issuer
 
 
-def _build_client(tmp_path) -> tuple[TestClient, object]:
+@pytest.fixture(autouse=True)
+def isolate_runtime_environment():
+    # Settings updates and startup load provider values into os.environ directly.
+    # Restore those application-owned writes as well as monkeypatched values.
+    with patch.dict("os.environ"):
+        yield
+
+
+def _build_client(tmp_path, lifespan=None) -> tuple[TestClient, object]:
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'auth.db'}")
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -35,11 +47,88 @@ def _build_client(tmp_path) -> tuple[TestClient, object]:
         async with session_maker() as session:
             yield session
 
-    app = FastAPI()
+    app = FastAPI(lifespan=lifespan)
     app.include_router(API_V1_AUTH_ROUTER)
     app.include_router(API_V1_ADMIN_ROUTER)
     app.dependency_overrides[get_async_session] = override_session
     return TestClient(app), engine
+
+
+def test_admin_can_read_and_update_settings_with_legacy_flag_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("USER_CONFIG_PATH", str(tmp_path / "userConfig.json"))
+    monkeypatch.setenv("CAN_CHANGE_KEYS", "false")
+    monkeypatch.delenv("DISABLE_AUTH", raising=False)
+    client, engine = _build_client(tmp_path)
+    try:
+        client.post("/api/v1/auth/setup", json={"username": "admin", "password": "secret123"})
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "secret123"})
+        saved = client.put("/api/v1/admin/provider-settings", json={"LLM": "openai", "OPENAI_API_KEY": "admin-only-key"})
+        assert saved.status_code == 200
+        response = client.get("/api/v1/admin/provider-settings")
+        assert response.status_code == 200
+        assert response.json()["OPENAI_API_KEY"] == "admin-only-key"
+    finally:
+        asyncio.run(engine.dispose())
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_provider_keys_require_admin_session(monkeypatch, tmp_path, authenticated):
+    monkeypatch.setenv("USER_CONFIG_PATH", str(tmp_path / "userConfig.json"))
+    monkeypatch.delenv("DISABLE_AUTH", raising=False)
+    client, engine = _build_client(tmp_path)
+    try:
+        client.post("/api/v1/auth/setup", json={"username": "admin", "password": "secret123"})
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "secret123"})
+        client.put("/api/v1/admin/provider-settings", json={"LLM": "openai", "OPENAI_API_KEY": "admin-only-key"})
+        client.post("/api/v1/admin/users", json={"username": "member", "password": "secret456"})
+        client.cookies.clear()
+        if authenticated:
+            client.post("/api/v1/auth/login", json={"username": "member", "password": "secret456"})
+        expected = 403 if authenticated else 401
+        for response in (
+            client.get("/api/v1/admin/provider-settings"),
+            client.put("/api/v1/admin/provider-settings", json={"OPENAI_API_KEY": "replacement"}),
+        ):
+            assert response.status_code == expected
+            assert "admin-only-key" not in response.text
+        client.cookies.clear()
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "secret123"})
+        assert client.get("/api/v1/admin/provider-settings").json()["OPENAI_API_KEY"] == "admin-only-key"
+    finally:
+        asyncio.run(engine.dispose())
+
+
+@pytest.mark.parametrize("provider_config", [{}, {"LLM": "openai"}, {"LLM": "ollama", "OLLAMA_MODEL": "missing-model"}])
+def test_missing_provider_config_does_not_block_startup_status_or_setup(monkeypatch, tmp_path, provider_config):
+    from api import lifespan
+
+    monkeypatch.setenv("APP_DATA_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("USER_CONFIG_PATH", str(tmp_path / "userConfig.json"))
+    monkeypatch.setenv("CAN_CHANGE_KEYS", "false")
+    monkeypatch.delenv("DISABLE_AUTH", raising=False)
+    for field in ("LLM", "OPENAI_API_KEY", "OPENAI_MODEL", "IMAGE_PROVIDER", "OLLAMA_MODEL"):
+        monkeypatch.delenv(field, raising=False)
+    (tmp_path / "userConfig.json").write_text(json.dumps(provider_config))
+    for field, value in provider_config.items():
+        monkeypatch.setenv(field, value)
+
+    async def no_op(*args):
+        pass
+
+    # Keep the real lifecycle and config migration; isolate unrelated template
+    # installation and database initialization already performed by this fixture.
+    for name in ("migrate_database_on_startup", "create_db_and_tables", "bootstrap_database_admin", "import_default_templates_on_startup", "fail_interrupted_async_tasks"):
+        monkeypatch.setattr(lifespan, name, no_op)
+    client, engine = _build_client(tmp_path, lifespan.app_lifespan)
+    monkeypatch.setattr(lifespan, "async_session_maker", async_sessionmaker(engine, expire_on_commit=False))
+    monkeypatch.setattr(lifespan, "dispose_engines", engine.dispose)
+    with client:
+        status = client.get("/api/v1/auth/status")
+        assert status.status_code == 200
+        assert status.json()["configured"] is False
+        setup = client.post("/api/v1/auth/setup", json={"username": "admin", "password": "secret123"})
+        assert setup.status_code == 200
+        assert client.get("/api/v1/auth/status").json()["configured"] is True
 
 
 def test_login_sets_http_only_jwt_cookie_for_username_only_account(
@@ -205,7 +294,6 @@ def test_admin_provider_settings_include_safe_global_presenton_status(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("USER_CONFIG_PATH", str(tmp_path / "userConfig.json"))
-    monkeypatch.setenv("CAN_CHANGE_KEYS", "true")
     client, engine = _build_client(tmp_path)
     client.post(
         "/api/v1/auth/setup",

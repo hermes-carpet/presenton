@@ -9,6 +9,7 @@ from services.mem0_oss_memory import (
     get_shared_mem0_client,
     run_shared_mem0_operation,
 )
+from utils.safe_logging import safe_log_exception
 
 LOGGER = logging.getLogger(__name__)
 CHAT_TURN_TAG = "[chat_turn]"
@@ -194,7 +195,7 @@ class ChatMemoryStore:
             if isinstance(exc, SystemExit):
                 self._disable_runtime("mem0 runtime failed while storing chat turns", exc=exc)
                 return
-            LOGGER.exception(
+            safe_log_exception(LOGGER,
                 (
                     "Failed to add chat mem0 memory "
                     "(presentation_id=%s, conversation_id=%s)"
@@ -245,7 +246,7 @@ class ChatMemoryStore:
                     exc=exc,
                 )
                 return ""
-            LOGGER.exception(
+            safe_log_exception(LOGGER,
                 (
                     "Failed to search chat mem0 memory "
                     "(presentation_id=%s, conversation_id=%s)"
@@ -306,7 +307,7 @@ class ChatMemoryStore:
             if isinstance(exc, SystemExit):
                 self._disable_runtime("mem0 runtime failed while loading chat history", exc=exc)
                 return []
-            LOGGER.exception(
+            safe_log_exception(LOGGER,
                 (
                     "Failed to load chat mem0 history "
                     "(presentation_id=%s, conversation_id=%s)"

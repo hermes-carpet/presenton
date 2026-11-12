@@ -207,3 +207,47 @@ def test_api_keys_cannot_access_browser_admin_routes(monkeypatch):
 
     assert response.status_code == 403
     assert json.loads(response.body) == {"detail": "Admin browser session required"}
+
+
+@pytest.mark.parametrize(("path", "request_method"), [
+    ("/api/v1/ppt/openai/models/available", "POST"),
+    ("/api/v1/ppt/images/test", "POST"),
+    ("/api/v1/ppt/openrouter/providers/available", "POST"),
+    ("/api/v1/ppt/ollama/models/available", "GET"),
+])
+@pytest.mark.parametrize(("method", "admin", "status", "disabled"), [
+    ("jwt", False, 403, False), ("api_key", False, 403, False),
+    ("api_key", True, 403, False), ("jwt", True, 200, False),
+    ("jwt", False, 200, True),
+])
+def test_custom_provider_discovery_requires_admin_browser_session(monkeypatch, path, request_method, method, admin, status, disabled):
+    class Session:
+        async def scalar(self, _query):
+            return 1
+
+    class SessionContext:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def resolve_principal(_request, _session):
+        return AuthPrincipal(user_id=uuid.uuid4(), username="control", is_admin=admin, method=method), None
+
+    async def no_cloud_proxy(*_args, **_kwargs):
+        return None
+
+    async def call_next(_request):
+        assert status == 200, "Unprivileged discovery reached the network-capable route"
+        return Response("provider control")
+
+    monkeypatch.setattr(middlewares, "is_disable_auth_enabled", lambda: disabled)
+    monkeypatch.setattr(middlewares, "async_session_maker", SessionContext)
+    monkeypatch.setattr(middlewares, "resolve_request_principal", resolve_principal)
+    monkeypatch.setattr(middlewares, "maybe_proxy_presenton_cloud_request", no_cloud_proxy)
+    request = Request({"type": "http", "method": request_method, "scheme": "http", "path": path,
+                       "query_string": b"", "headers": [], "client": ("127.0.0.1", 1234),
+                       "server": ("127.0.0.1", 5001)})
+    response = asyncio.run(SessionAuthMiddleware(app=None).dispatch(request, call_next))
+    assert response.status_code == status

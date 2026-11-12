@@ -5,7 +5,8 @@ import {
     normalizeSvgNumberish,
     transformSvgMarkup,
 } from "@/lib/svg-color";
-import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 
@@ -116,15 +117,52 @@ const readLocalStaticIconSvg = async (
         throw new SvgSourceError("Invalid local SVG path", 400);
     }
 
-    const fileStats = await fs.stat(/* turbopackIgnore: true */ resolvedPath);
-    if (!fileStats.isFile()) {
-        throw new SvgSourceError("SVG file not found", 404);
-    }
-    if (fileStats.size > MAX_SVG_SIZE_BYTES) {
-        throw new SvgSourceError("SVG file is too large", 413);
+    let file: FileHandle;
+    try {
+        file = await fs.open(
+            /* turbopackIgnore: true */ resolvedPath,
+            fsConstants.O_RDONLY |
+                (fsConstants.O_NOFOLLOW ?? 0) |
+                (fsConstants.O_NONBLOCK ?? 0)
+        );
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ELOOP") {
+            throw new SvgSourceError("Invalid local SVG path", 400);
+        }
+        if (code === "ENOENT" || code === "ENOTDIR") {
+            throw new SvgSourceError("SVG file not found", 404);
+        }
+        throw error;
     }
 
-    return fs.readFile(/* turbopackIgnore: true */ resolvedPath, "utf8");
+    try {
+        // Inspect and read the same open file even if its pathname is replaced.
+        const fileStats = await file.stat();
+        if (!fileStats.isFile()) {
+            throw new SvgSourceError("SVG file not found", 404);
+        }
+        if (fileStats.size > MAX_SVG_SIZE_BYTES) {
+            throw new SvgSourceError("SVG file is too large", 413);
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        const stream = file.createReadStream({
+            autoClose: false,
+            start: 0,
+            end: MAX_SVG_SIZE_BYTES,
+        });
+        for await (const chunk of stream) {
+            size += chunk.length;
+            if (size > MAX_SVG_SIZE_BYTES) {
+                throw new SvgSourceError("SVG file is too large", 413);
+            }
+            chunks.push(chunk);
+        }
+        return Buffer.concat(chunks, size).toString("utf8");
+    } finally {
+        await file.close();
+    }
 };
 
 export async function GET(req: Request) {

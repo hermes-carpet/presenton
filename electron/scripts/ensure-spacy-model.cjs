@@ -6,9 +6,20 @@ const electronRoot = path.join(__dirname, "..");
 const fastapiDir = path.join(electronRoot, "..", "servers", "fastapi");
 const uvCmd = process.platform === "win32" ? "uv.exe" : "uv";
 const requiredModel = process.env.MEM0_SPACY_MODEL || "en_core_web_sm";
+const defaultModelWheel =
+  "https://github.com/explosion/spacy-models/releases/download/" +
+  "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl";
+const modelWheelUrl =
+  process.env.MEM0_SPACY_MODEL_WHEEL_URL ||
+  (requiredModel === "en_core_web_sm" ? defaultModelWheel : "");
 const strictMode =
   (process.env.MEM0_SPACY_STRICT || "").trim().toLowerCase() === "true";
 const venvDir = path.join(fastapiDir, ".venv");
+const venvPython = path.join(
+  venvDir,
+  process.platform === "win32" ? "Scripts" : "bin",
+  process.platform === "win32" ? "python.exe" : "python",
+);
 
 function runUv(args, description) {
   const result = spawnSync(uvCmd, args, {
@@ -37,12 +48,20 @@ function ensureVenv() {
 
 function hasModelInstalled() {
   return runUvPython(
-    ["-c", `import spacy; spacy.load("${requiredModel}")`],
+    ["-c", `import spacy; spacy.load(${JSON.stringify(requiredModel)})`],
     `spaCy model check (${requiredModel})`,
   );
 }
 
 function installModel() {
+  if (modelWheelUrl) {
+    console.log(`[spacy-setup] Installing model wheel: ${modelWheelUrl}`);
+    return runUv(
+      ["pip", "install", "--python", venvPython, modelWheelUrl],
+      `spaCy model wheel install (${requiredModel})`,
+    );
+  }
+
   return runUvPython(
     ["-m", "spacy", "download", requiredModel],
     `spaCy model install (${requiredModel})`,
@@ -68,14 +87,15 @@ function main() {
     return;
   }
 
-  const message =
-    `[spacy-setup] Could not install spaCy model (${requiredModel}). ` +
-    "Mem0 will self-disable at runtime if this dependency is unavailable.";
+  const message = `Could not install spaCy model (${requiredModel}).`;
 
   if (strictMode) {
     throw new Error(message);
   }
-  console.warn(message);
+  console.warn(
+    `[spacy-setup] ${message} ` +
+      "Mem0 will self-disable at runtime if this dependency is unavailable.",
+  );
 }
 
 try {

@@ -288,7 +288,7 @@ function createPreviewSlide(
     slide: {
       ui: {
         id: `insert-preview-${kind}-${itemId ?? "default"}`,
-        background: theme.background,
+        background: kind === "image" ? "#F6F6F9" : theme.background,
         elements,
         components,
       },
@@ -317,6 +317,7 @@ export function InsertPalettePreview({
       fitBounds={preview.bounds}
       fitPadding={fit.padding}
       fitMaxScale={fit.maxScale}
+      fillContainer={kind === "image"}
       className="h-full rounded-[inherit]"
       contentClassName="rounded-[inherit]"
     />

@@ -85,7 +85,7 @@ export async function resolveExportRuntimeRoot(packagedExportRoot: string): Prom
   await fs.promises.writeFile(
     path.join(cacheRoot, ".source-fingerprint"),
     fingerprint,
-    "utf8",
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
   );
   return cacheRoot;
 }

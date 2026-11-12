@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { ensurePrivateDirectory, writePrivateFileSync } from "./private-storage";
 
 type ConfigSnapshot<T extends object> = {
   config: T;
@@ -53,7 +54,7 @@ function lockPath(configPath: string): string {
 
 function ensureParentDirectory(configPath: string): void {
   retrySync("create user config directory", () => {
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    ensurePrivateDirectory(path.dirname(configPath));
   });
 }
 
@@ -108,7 +109,7 @@ function acquireLock(configPath: string): () => void {
 
   while (true) {
     try {
-      const fd = fs.openSync(lockFilePath, "wx");
+      const fd = fs.openSync(lockFilePath, "wx", 0o600);
       try {
         fs.writeSync(
           fd,
@@ -147,7 +148,7 @@ function acquireLock(configPath: string): () => void {
 
 function writeFileDurably(filePath: string, content: string): void {
   const fd = retrySync(`open ${path.basename(filePath)} for writing`, () =>
-    fs.openSync(filePath, "w")
+    fs.openSync(filePath, "wx", 0o600)
   );
   try {
     retrySync(`write ${path.basename(filePath)}`, () => {
@@ -167,11 +168,11 @@ function copyBackupIfPossible(configPath: string, primaryValid: boolean): void {
   try {
     if (primaryValid && fs.existsSync(configPath)) {
       retrySync("write user config backup", () => {
-        fs.copyFileSync(configPath, configBackupPath);
+        writePrivateFileSync(configBackupPath, fs.readFileSync(configPath));
       });
     } else if (!fs.existsSync(configBackupPath) && fs.existsSync(configPath)) {
       retrySync("initialize user config backup", () => {
-        fs.copyFileSync(configPath, configBackupPath);
+        writePrivateFileSync(configBackupPath, fs.readFileSync(configPath));
       });
     }
   } catch (error) {

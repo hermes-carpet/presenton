@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, unquote
@@ -143,9 +144,14 @@ def resolve_app_path_to_filesystem(path_or_url: str) -> Optional[str]:
 
     if path.startswith("/vendor/fonts/"):
         relative = path.lstrip("/")
-        nextjs_public_root = (
-            Path(__file__).resolve().parents[2] / "nextjs" / "public"
+        # PyInstaller puts __file__ under fastapi/_internal, while Electron
+        # bundles Next.js beside the fastapi executable's directory.
+        servers_root = (
+            Path(sys.executable).resolve().parent.parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parents[2]
         )
+        nextjs_public_root = servers_root / "nextjs" / "public"
         return _existing_file_within(
             os.path.join(nextjs_public_root, relative),
             str(nextjs_public_root),
@@ -164,7 +170,10 @@ def _existing_file_within(candidate: str, root: str) -> Optional[str]:
     try:
         resolved_candidate = os.path.realpath(candidate)
         resolved_root = os.path.realpath(root)
-        if os.path.commonpath([resolved_candidate, resolved_root]) != resolved_root:
+        # Compare canonical paths with a directory separator: sibling names
+        # such as images-other must never satisfy the images boundary.
+        prefix = resolved_root.rstrip(os.sep) + os.sep
+        if not resolved_candidate.startswith(prefix):
             return None
     except (OSError, ValueError):
         return None
@@ -224,3 +233,7 @@ def get_exports_directory():
 
 def get_uploads_directory():
     return _owned_directory("uploads")
+
+
+def get_pptx_to_json_directory():
+    return _owned_directory("pptx-to-json")

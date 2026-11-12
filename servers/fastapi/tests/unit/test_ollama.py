@@ -73,8 +73,11 @@ def test_list_models_returns_service_unavailable_when_ollama_is_unreachable(
         asyncio.run(ollama.list_available_ollama_models("http://ollama.example:11434/"))
 
     assert exc_info.value.status_code == 503
-    assert "http://ollama.example:11434" in exc_info.value.detail
-    assert "instead of localhost" in exc_info.value.detail
+    assert exc_info.value.detail == (
+        "Could not connect to Ollama at http://ollama.example:11434. "
+        "Make sure Ollama is running and reachable from Presenton. "
+        "When Presenton runs in Docker, use host.docker.internal instead of localhost."
+    )
 
 
 def test_list_models_rejects_invalid_ollama_url():

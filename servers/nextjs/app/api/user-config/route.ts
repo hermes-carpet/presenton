@@ -7,15 +7,6 @@ import {
 import { readRuntimeProviderConfig } from "@/lib/runtime-provider-config";
 import { DESKTOP_TOKEN_HEADER } from "@/lib/desktop-auth";
 
-const canChangeKeys = process.env.CAN_CHANGE_KEYS !== "false";
-
-function immutableResponse() {
-  return NextResponse.json(
-    { error: "You are not allowed to access this resource", status: 403 },
-    { status: 403 }
-  );
-}
-
 async function forwardProviderSettings(
   request: Request,
   method: "GET" | "PUT",
@@ -54,7 +45,7 @@ export async function GET(request: Request) {
   // Administrators need the real values in the settings forms. Regular users
   // only need the effective provider/model selection; shared secrets must
   // never be sent to their browser.
-  if (auth.role !== "admin" || !canChangeKeys) {
+  if (auth.role !== "admin") {
     try {
       return NextResponse.json(readRuntimeProviderConfig().config);
     } catch {
@@ -78,7 +69,6 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const denied = await requireAdminApi(request);
   if (denied) return denied;
-  if (!canChangeKeys) return immutableResponse();
   if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   }

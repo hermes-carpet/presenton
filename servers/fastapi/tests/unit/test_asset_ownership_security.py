@@ -16,6 +16,101 @@ from templates import fonts_and_slides_preview
 from utils.asset_directory_utils import resolve_app_path_to_filesystem
 
 
+@pytest.mark.parametrize("is_admin", [False, True])
+@pytest.mark.parametrize("directory_alias", [False, True])
+def test_asset_aliases_cannot_cross_owner_namespaces(monkeypatch, tmp_path, is_admin, directory_alias):
+    app_data = tmp_path / "app_data"
+    owner, other = uuid.uuid4(), uuid.uuid4()
+    own = app_data / "uploads" / "users" / str(owner) / "own.pptx"
+    secret = app_data / "uploads" / "users" / str(other) / "secret.pptx"
+    own.parent.mkdir(parents=True)
+    secret.parent.mkdir(parents=True)
+    own.write_bytes(b"own")
+    secret.write_bytes(b"secret")
+    alias = own.parent / "alias"
+    if directory_alias:
+        alias.symlink_to(secret.parent, target_is_directory=True)
+        alias = alias / "secret.pptx"
+    else:
+        alias = alias.with_suffix(".pptx")
+        alias.symlink_to(secret)
+    own_alias = own.parent / "own-alias.pptx"
+    own_alias.symlink_to(own)
+    monkeypatch.setenv("APP_DATA_DIRECTORY", str(app_data))
+    owner_token = set_current_owner_id(owner)
+    admin_token = set_current_owner_is_admin(is_admin)
+    try:
+        own_url = f"/app_data/uploads/users/{owner}/own-alias.pptx"
+        assert resolve_app_path_to_filesystem(own_url) == os.path.realpath(own)
+        alias_url = "/app_data/" + alias.relative_to(app_data).as_posix()
+        for value in (alias_url, "http://localhost:8000" + alias_url, str(alias), alias.as_uri(), "http://localhost:8000" + str(alias)):
+            assert resolve_app_path_to_filesystem(value) is None, value
+        assert not is_app_data_path_authorized(alias_url, user_id=owner, is_admin=is_admin)
+    finally:
+        reset_current_owner_is_admin(admin_token)
+        reset_current_owner_id(owner_token)
+
+
+def test_canonical_owner_checks_preserve_symlinked_asset_volume_roots(monkeypatch, tmp_path):
+    app_data, volume = tmp_path / "app_data", tmp_path / "uploads-volume"
+    app_data.mkdir()
+    owner = uuid.uuid4()
+    own = volume / "users" / str(owner) / "own.pptx"
+    own.parent.mkdir(parents=True)
+    own.write_bytes(b"own")
+    (app_data / "uploads").symlink_to(volume, target_is_directory=True)
+    monkeypatch.setenv("APP_DATA_DIRECTORY", str(app_data))
+    token = set_current_owner_id(owner)
+    try:
+        assert resolve_app_path_to_filesystem(f"/app_data/uploads/users/{owner}/own.pptx") == os.path.realpath(own)
+    finally:
+        reset_current_owner_id(token)
+
+
+def test_static_asset_requests_reject_cross_owner_aliases(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from api import middlewares
+    from api.v1.auth.assets import mount_app_data_assets
+    from api.v1.auth.principal import AuthPrincipal
+
+    owner, other = uuid.uuid4(), uuid.uuid4()
+    own = tmp_path / "uploads" / "users" / str(owner) / "own.pptx"
+    secret = tmp_path / "uploads" / "users" / str(other) / "secret.pptx"
+    own.parent.mkdir(parents=True)
+    secret.parent.mkdir(parents=True)
+    own.write_bytes(b"own")
+    secret.write_bytes(b"secret")
+    (own.parent / "alias.pptx").symlink_to(secret)
+    (own.parent / "canonical.pptx").write_bytes(b"own")
+    (own.parent / "%63anonical.pptx").symlink_to(secret)
+    monkeypatch.setenv("APP_DATA_DIRECTORY", str(tmp_path))
+
+    class Session:
+        async def scalar(self, _query): return 1
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *_args): return None
+
+    async def principal(*_args): return AuthPrincipal(owner, "member", False, "jwt"), object()
+    async def no_proxy(*_args, **_kwargs): return None
+
+    monkeypatch.setattr(middlewares, "is_disable_auth_enabled", lambda: False)
+    monkeypatch.setattr(middlewares, "async_session_maker", Context)
+    monkeypatch.setattr(middlewares, "resolve_request_principal", principal)
+    monkeypatch.setattr(middlewares, "maybe_proxy_presenton_cloud_request", no_proxy)
+    app = FastAPI()
+    app.add_middleware(middlewares.SessionAuthMiddleware)
+    mount_app_data_assets(app, str(tmp_path))
+    with TestClient(app) as client:
+        assert client.get(f"/app_data/uploads/users/{owner}/own.pptx").content == b"own"
+        assert client.get(f"/app_data/uploads/users/{owner}/alias.pptx").status_code == 404
+        # TestClient performs one more decode than a raw ASGI HTTP transport.
+        assert client.get(f"/app_data/uploads/users/{owner}/%2563anonical.pptx").content == b"own"
+        assert client.get(f"/app_data/uploads/users/{owner}/%252563anonical.pptx").status_code == 404
+
+
 def test_browser_asset_paths_are_owner_scoped_and_traversal_safe():
     owner_id = uuid.uuid4()
     other_id = uuid.uuid4()
@@ -97,7 +192,7 @@ def test_server_side_file_resolution_allows_packaged_nextjs_fonts():
     )
 
     assert resolved is not None
-    assert resolved.endswith(
+    assert resolved.replace(os.sep, "/").endswith(
         "servers/nextjs/public/vendor/fonts/sans_serif/poppins/Poppins-Regular.ttf"
     )
 

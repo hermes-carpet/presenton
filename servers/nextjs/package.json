@@ -37,22 +37,23 @@
     "@reduxjs/toolkit": "^2.2.8",
     "@tailwindcss/typography": "^0.5.16",
     "@tanstack/react-hotkeys": "^0.10.0",
-    "@tiptap/extension-underline": "^2.0.0",
-    "@tiptap/react": "^2.11.5",
-    "@tiptap/starter-kit": "^2.11.5",
+    "@tiptap/core": "3.30.5",
+    "@tiptap/extension-underline": "3.30.5",
+    "@tiptap/pm": "3.30.5",
+    "@tiptap/react": "3.30.5",
+    "@tiptap/starter-kit": "3.30.5",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",
-    "dompurify": "^3.4.6",
+    "dompurify": "^3.4.17",
     "jsonrepair": "^3.12.0",
-    "katex": "^0.16.22",
+    "katex": "^0.18.2",
     "konva": "^10.3.0",
     "lucide-react": "^0.447.0",
     "marked": "^15.0.11",
-    "mermaid": "^11.9.0",
     "mixpanel-browser": "^2.67.0",
-    "next": "16.2.6",
+    "next": "16.4.1",
     "next-themes": "^0.4.6",
     "prismjs": "^1.30.0",
     "react": "19.2.6",
@@ -61,13 +62,11 @@
     "react-konva": "^19.2.4",
     "react-redux": "^9.1.2",
     "recharts": "^2.15.4",
-    "sharp": "^0.34.3",
+    "sharp": "^0.35.5",
     "sonner": "^2.0.6",
     "tailwind-merge": "^2.5.3",
     "tailwindcss-animate": "^1.0.7",
-    "tiptap-markdown": "^0.8.10",
-    "uuid": "^11.1.0",
-    "zod": "^4.0.5"
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
@@ -80,14 +79,18 @@
     "cypress": "^15.18.1",
     "esbuild": "0.25.8",
     "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.4.1",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
   },
   "overrides": {
-    "brace-expansion": "2.0.2"
-  },
-  "peerDependencies": {
-    "zod": "^4.0.5"
+    "systeminformation": ">=5.33.16",
+    "brace-expansion@^1.0.0": "1.1.21",
+    "brace-expansion@^2.0.0": "2.1.7",
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "6.1.5"
+    },
+    "minimatch@>=9 <11.0.1": "^11.0.3",
+    "glob@>=9 <14.0.2": "^14.0.3"
   }
 }

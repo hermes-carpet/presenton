@@ -19,10 +19,6 @@ export function setupEnv(fastApiPort: number, nextjsPort: number) {
 
   // Set environment variables for NextJS API routes
   process.env.USER_CONFIG_PATH = userConfigPath;
-  // Read CAN_CHANGE_KEYS from existing env or default to true
-  if (process.env.CAN_CHANGE_KEYS === undefined) {
-    process.env.CAN_CHANGE_KEYS = "true";
-  }
 }
 
 

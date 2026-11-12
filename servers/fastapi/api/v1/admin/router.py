@@ -31,7 +31,6 @@ from services.api_keys import issue_api_key, reveal_api_key
 from utils.datetime_utils import get_current_utc_datetime
 from utils.get_env import (
     get_app_data_directory_env,
-    get_can_change_keys_env,
     get_temp_directory_env,
     get_presenton_oauth_issuer,
     is_disable_auth_enabled,
@@ -142,20 +141,11 @@ async def require_settings_admin(
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
-def _ensure_settings_are_mutable() -> None:
-    if get_can_change_keys_env() == "false":
-        raise HTTPException(
-            status_code=403,
-            detail="You are not allowed to access this resource",
-        )
-
-
 @API_V1_ADMIN_ROUTER.get("/provider-settings")
 async def read_provider_settings(
     _: None = Depends(require_settings_admin),
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
-    _ensure_settings_are_mutable()
     settings = await get_provider_settings(session)
     provider = await get_presenton_provider(session, get_presenton_oauth_issuer())
     return {
@@ -171,7 +161,6 @@ async def update_provider_settings(
     _: None = Depends(require_settings_admin),
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
-    _ensure_settings_are_mutable()
     saved = await save_provider_settings(session, config)
     update_env_with_user_config()
     return saved

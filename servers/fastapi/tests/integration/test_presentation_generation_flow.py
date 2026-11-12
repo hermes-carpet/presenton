@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from api.v1.ppt.endpoints import presentation as presentation_endpoint
 from constants.presentation import MAX_NUMBER_OF_SLIDES
@@ -438,14 +439,15 @@ def test_create_presentation_stores_current_version(fake_async_session):
     assert fake_async_session.commit_count == 1
 
 
-def test_create_blank_presentation_is_template_free_and_editable():
-    class BlankPresentationSession(FakeAsyncSession):
-        async def refresh(self, obj):
-            now = datetime.now()
-            if isinstance(obj, PresentationModel):
-                obj.created_at = obj.created_at or now
-                obj.updated_at = obj.updated_at or now
+class BlankPresentationSession(FakeAsyncSession):
+    async def refresh(self, obj):
+        now = datetime.now()
+        if isinstance(obj, PresentationModel):
+            obj.created_at = obj.created_at or now
+            obj.updated_at = obj.updated_at or now
 
+
+def test_create_blank_presentation_is_template_free_and_editable():
     session = BlankPresentationSession()
 
     response = _run(
@@ -494,6 +496,55 @@ def test_blank_presentation_slide_ui_returns_an_independent_copy():
     assert second["elements"][0]["fill"]["color"] == "#FFFFFF"
 
 
+@pytest.mark.parametrize("is_default", [False, True])
+@pytest.mark.parametrize("prefix", ["", "custom-"])
+def test_create_blank_presentation_keeps_selected_template(is_default, prefix):
+    template = TemplateV2(
+        id=str(uuid.uuid4()),
+        name="Selected template",
+        is_default=is_default,
+        layouts=_template_layout_payload(),
+        assets={"fonts": {"Inter": "/app_data/templates/inter.ttf"}},
+    )
+    session = BlankPresentationSession(get_results={template.id: template})
+
+    response = _run(
+        presentation_endpoint.create_blank_presentation(
+            template_id=f"{prefix}{template.id}", sql_session=session
+        )
+    )
+
+    presentation, slide = session.added
+    assert session.commit_count == 1
+    assert presentation.version == PresentationVersion.V2_STANDARD
+    assert presentation.layout is None
+    assert presentation.fonts == template.assets["fonts"]
+    assert presentation.n_slides == 1
+    assert presentation.include_title_slide is False
+    assert slide.layout_group == template.id
+    assert slide.layout == presentation_endpoint.BLANK_PRESENTATION_LAYOUT_ID
+    assert slide.content == {}
+    assert slide.ui == presentation_endpoint._blank_presentation_slide_ui()
+    assert response.slides[0].layout_group == template.id
+    assert response.fonts == template.assets["fonts"]
+
+
+@pytest.mark.parametrize("template_id", ["missing-template", "", "   "])
+def test_create_blank_presentation_rejects_invalid_template_before_saving(template_id):
+    session = FakeAsyncSession()
+
+    with pytest.raises(HTTPException) as exc:
+        _run(
+            presentation_endpoint.create_blank_presentation(
+                template_id=template_id, sql_session=session
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert session.added == []
+    assert session.commit_count == 0
+
+
 def test_create_blank_presentation_rolls_back_failed_transaction():
     class FailingCommitSession(FakeAsyncSession):
         def __init__(self):
@@ -531,6 +582,36 @@ def test_blank_presentation_route_is_additive():
     assert ("/presentation/create/blank", "POST") in routes
     assert ("/presentation/create", "POST") in routes
     assert ("/presentation/prepare", "POST") in routes
+
+
+@pytest.mark.parametrize(
+    "body, expected_status, expected_group",
+    [
+        (None, 201, "blank"),
+        ({}, 201, "blank"),
+        ({"template_id": "chosen-template"}, 201, "chosen-template"),
+        ({"template_id": "missing-template"}, 400, None),
+    ],
+)
+def test_blank_presentation_route_accepts_optional_template_body(
+    body, expected_status, expected_group
+):
+    template = TemplateV2(id="chosen-template", name="Chosen template")
+    session = BlankPresentationSession(get_results={template.id: template})
+    app = FastAPI()
+    app.include_router(presentation_endpoint.PRESENTATION_ROUTER)
+    app.dependency_overrides[presentation_endpoint.get_async_session] = lambda: session
+
+    with TestClient(app) as client:
+        response = client.post("/presentation/create/blank", json=body)
+
+    assert response.status_code == expected_status
+    if expected_status == 201:
+        assert response.json()["slides"][0]["layout_group"] == expected_group
+        assert session.commit_count == 1
+    else:
+        assert session.added == []
+        assert session.commit_count == 0
 
 
 def test_check_api_request_accepts_custom_prefixed_template_id():

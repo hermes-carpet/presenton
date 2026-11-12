@@ -8,7 +8,7 @@ const repoRoot = path.join(electronRoot, "..");
 const sourceRoot = path.join(repoRoot, "presentation-export");
 const targetRoot = path.join(electronRoot, "resources", "export");
 const rootSyncScript = path.join(repoRoot, "scripts", "sync-presentation-export.cjs");
-const { validateSharpRuntime } = require(rootSyncScript);
+const { validateExportRuntime } = require(rootSyncScript);
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(electronRoot, "package.json"), "utf8"),
 );
@@ -39,9 +39,9 @@ function validateTarget(expected = expectedVersion) {
       `Expected export-core ${expected} in Electron resources, found ${version || "nothing"}.`,
     );
   }
-  const sharpRuntime = validateSharpRuntime(targetRoot);
+  const sharpRuntime = validateExportRuntime(targetRoot);
   if (!sharpRuntime.ok) {
-    throw new Error(`Invalid Electron export Sharp runtime: ${sharpRuntime.reason}`);
+    throw new Error(`Invalid Electron export dependencies: ${sharpRuntime.reason}`);
   }
   return version;
 }

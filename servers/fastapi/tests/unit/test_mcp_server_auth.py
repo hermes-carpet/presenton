@@ -230,10 +230,15 @@ def test_mcp_origin_allowlist_includes_loopback_and_configured_public_origin(
 
     origins = mcp_server.get_mcp_allowed_origins()
 
-    assert "http://localhost:*" in origins
-    assert "http://127.0.0.1:*" in origins
-    assert "https://slides.example.com" in origins
-    assert "https://slides.example.com/presenton" not in origins
+    assert origins == [
+        "http://localhost:*",
+        "https://localhost:*",
+        "http://127.0.0.1:*",
+        "https://127.0.0.1:*",
+        "http://[::1]:*",
+        "https://[::1]:*",
+        "https://slides.example.com",
+    ]
     assert mcp_server.MCP_ALLOWED_HOSTS == ["localhost", "127.0.0.1", "::1"]
 
 

@@ -76,7 +76,7 @@ class TestMem0PresentationMemoryService:
                 "OLLAMA_URL": "http://ollama:11434",
                 "OLLAMA_MODEL": "llama3.1:8b",
             },
-            clear=False,
+            clear=True,
         ), patch(
             "services.mem0_oss_memory.memory_from_config",
             side_effect=_fake_memory_from_config,

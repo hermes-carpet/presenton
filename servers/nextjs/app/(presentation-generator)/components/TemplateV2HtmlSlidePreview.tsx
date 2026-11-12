@@ -219,6 +219,7 @@ export function TemplateV2HtmlSlidePreview({
   slide,
   fonts,
   fixedSize = false,
+  fillContainer = false,
   fitBounds,
   fitPadding,
   fitMaxScale,
@@ -228,6 +229,7 @@ export function TemplateV2HtmlSlidePreview({
   slide: unknown;
   fonts?: unknown;
   fixedSize?: boolean;
+  fillContainer?: boolean;
   fitBounds?: { left: number; top: number; right: number; bottom: number };
   fitPadding?: { x: number; y: number };
   fitMaxScale?: number;
@@ -236,7 +238,8 @@ export function TemplateV2HtmlSlidePreview({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const [containerWidth, setContainerWidth] = useState(0);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const containerWidth = containerSize.width;
 
 
   const html = useMemo(() => {
@@ -254,7 +257,10 @@ export function TemplateV2HtmlSlidePreview({
     const element = containerRef.current;
     if (!element) return;
 
-    const updateWidth = () => setContainerWidth(element.clientWidth);
+    const updateWidth = () => setContainerSize({
+      width: element.clientWidth,
+      height: element.clientHeight,
+    });
     updateWidth();
 
     const resizeObserver = new ResizeObserver(updateWidth);
@@ -364,7 +370,9 @@ export function TemplateV2HtmlSlidePreview({
     if (!hasFitBounds || !fitBounds || !containerWidth) return null;
 
     const viewportHeight =
-      (containerWidth * TEMPLATE_V2_HTML_HEIGHT) / TEMPLATE_V2_HTML_WIDTH;
+      fillContainer
+        ? containerSize.height
+        : (containerWidth * TEMPLATE_V2_HTML_HEIGHT) / TEMPLATE_V2_HTML_WIDTH;
     const paddingX = Math.max(0, Math.min(fitPadding?.x ?? 0.08, 0.4));
     const paddingY = Math.max(0, Math.min(fitPadding?.y ?? 0.1, 0.4));
     const contentWidth = fitBounds.right - fitBounds.left;
@@ -385,6 +393,8 @@ export function TemplateV2HtmlSlidePreview({
     };
   }, [
     containerWidth,
+    containerSize.height,
+    fillContainer,
     fitBounds,
     fitMaxScale,
     fitPadding?.x,
@@ -425,8 +435,8 @@ export function TemplateV2HtmlSlidePreview({
             height: TEMPLATE_V2_HTML_HEIGHT,
           }
           : {
-            height: renderScale ? previewHeight : undefined,
-            aspectRatio: renderScale ? undefined : "16 / 9",
+            height: fillContainer ? "100%" : renderScale ? previewHeight : undefined,
+            aspectRatio: fillContainer || renderScale ? undefined : "16 / 9",
           }
       }
     >

@@ -9,13 +9,7 @@ from services.database import async_session_maker, create_db_and_tables, dispose
 from services.async_tasks import fail_interrupted_async_tasks
 from services.provider_settings import migrate_provider_settings_from_file
 from templates.default_templates import import_default_templates_on_startup
-from utils.get_env import (
-    get_app_data_directory_env,
-    get_can_change_keys_env,
-)
-from utils.model_availability import (
-    check_llm_and_image_provider_api_or_model_availability,
-)
+from utils.get_env import get_app_data_directory_env
 from utils.user_config import update_env_with_user_config
 from api.v1.auth.bootstrap import bootstrap_database_admin
 
@@ -53,8 +47,9 @@ async def app_lifespan(_: FastAPI):
     Lifespan context manager for FastAPI application.
     Initializes the application data directory, runs Alembic migrations when
     MIGRATE_DATABASE_ON_STARTUP=true, creates any missing tables, bootstraps
-    the primary administrator from legacy/env credentials (if provided), and checks LLM model
-    availability.
+    the primary administrator from legacy/env credentials (if provided), and loads
+    provider configuration. Provider availability is checked when it is used so account
+    setup and status remain available on an unconfigured instance.
     """
     _configure_application_logging()
     os.makedirs(get_app_data_directory_env(), exist_ok=True)
@@ -67,9 +62,7 @@ async def app_lifespan(_: FastAPI):
         await fail_interrupted_async_tasks(session)
         await migrate_provider_settings_from_file(session)
     await import_default_templates_on_startup()
-    if get_can_change_keys_env() != "false":
-        update_env_with_user_config()
-    await check_llm_and_image_provider_api_or_model_availability()
+    update_env_with_user_config()
     yield
     # Shutdown: release all database connections to prevent stale/leaked pools.
     await dispose_engines()

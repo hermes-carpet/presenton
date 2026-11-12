@@ -35,6 +35,7 @@ from utils.web_search import (
     should_expose_external_web_search_tool,
     should_use_native_web_search,
 )
+from utils.safe_logging import safe_log
 
 LOGGER = logging.getLogger(__name__)
 
@@ -326,12 +327,12 @@ async def generate_ppt_outline(
                 search_query = generated_query
                 LOGGER.info("Generated outline web search query: query=%r", search_query)
             else:
-                LOGGER.info(
+                safe_log(LOGGER, logging.INFO,
                     "Outline query generation returned no query; using fallback query=%r",
                     fallback_query,
                 )
         except Exception:
-            LOGGER.warning(
+            safe_log(LOGGER, logging.WARNING,
                 "Outline web search query generation failed; using fallback query=%r",
                 fallback_query,
                 exc_info=True,

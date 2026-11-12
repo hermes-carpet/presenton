@@ -13,7 +13,7 @@ export default function GenerateUserGuide({ mode, communityEnabled }: { mode: Ge
   const steps = [
     { target: "setup", title: "Choose how your slides are designed", description: "Smart creates layouts around your content. Standard uses your chosen template. Set the slide count, language, and advanced settings beside the mode switch." },
     { target: "prompt", title: "Write your presentation brief", description: "Describe your topic, audience, and key points. Use the paperclip to attach supporting documents. Choose a language when working with documents." },
-    ...(mode === "smart" && communityEnabled ? [{ target: "designs", title: "Choose an optional design reference", description: "Search Community designs, preview them with the eye button, then choose Use. The menu also lets you reuse a prompt. My Designs opens your saved presentations; Browse All opens the full community library." }] : []),
+    ...(mode === "smart" && communityEnabled ? [{ target: "designs", title: "Choose an optional design reference", description: "Search Community designs, preview them with the eye button, then choose Use. The menu also lets you reuse a prompt. Browse All opens the full community library." }] : []),
     { target: "prompt", title: "Generate your presentation", description: "Select the purple arrow, or press Command/Ctrl + Enter in your brief. Smart opens your generated presentation; Standard starts with an outline and template selection. Press ? on this page to reopen this guide." },
   ];
   const current = steps[Math.min(step, steps.length - 1)];

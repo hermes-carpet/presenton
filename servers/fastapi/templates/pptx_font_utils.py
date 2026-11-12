@@ -7,6 +7,7 @@ import struct
 import tempfile
 import zipfile
 from functools import lru_cache
+from importlib.resources import files
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 from pydantic import BaseModel
@@ -14,7 +15,6 @@ from pptx import Presentation
 from fontTools.ttLib import TTFont
 
 DEFAULT_GOOGLE_FONT_WEIGHTS = (400, 700)
-STATIC_FONT_CATALOG_PATH = Path(__file__).resolve().parent.parent / "assets" / "fonts.json"
 PPT_NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
@@ -133,7 +133,7 @@ def normalize_font_family_name(raw_name: str) -> str:
         return raw_name
     name = raw_name.replace("_", " ").replace("-", " ")
     name = re.sub(r"(?<=[a-z0-9])([A-Z])", r" \1", name)
-    name = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name)
+    name = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
     lower_name = name.lower()
     for style in sorted(_STYLE_TOKENS, key=len, reverse=True):
@@ -161,7 +161,8 @@ def normalize_font_family_name(raw_name: str) -> str:
 @lru_cache(maxsize=1)
 def get_static_font_catalog() -> Dict[str, Tuple[str, str]]:
     """Return normalized family names mapped to packaged font names and URLs."""
-    with STATIC_FONT_CATALOG_PATH.open(encoding="utf-8") as font_file:
+    catalog_resource = files("templates").joinpath("assets", "fonts.json")
+    with catalog_resource.open(encoding="utf-8") as font_file:
         raw_catalog = json.load(font_file)
     catalog: Dict[str, Tuple[str, str]] = {}
     for item in raw_catalog:

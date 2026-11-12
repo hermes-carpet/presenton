@@ -7,7 +7,7 @@ const {
   normalizeBundledMacChromiumForPackaging,
 } = require("./scripts/prepare-export-chromium.cjs")
 const {
-  validateSharpRuntime,
+  validateExportRuntime,
 } = require("../scripts/sync-presentation-export.cjs")
 
 const APP_ID = "com.presenton.presenton"
@@ -714,12 +714,12 @@ function collectMissingBundleResources(resourcesRoot) {
   if (!fs.existsSync(exportCore)) {
     missing.push({ label: "Export Core package", path: exportCore })
   }
-  const exportSharpRuntime = validateSharpRuntime(
+  const exportSharpRuntime = validateExportRuntime(
     path.join(resourcesRoot, "export")
   )
   if (!exportSharpRuntime.ok) {
     missing.push({
-      label: `Export Sharp runtime (${exportSharpRuntime.reason})`,
+      label: `Export dependencies (${exportSharpRuntime.reason})`,
       path: path.join(resourcesRoot, "export", "node_modules", "sharp"),
     })
   }

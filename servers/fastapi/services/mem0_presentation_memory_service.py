@@ -9,6 +9,7 @@ from services.mem0_oss_memory import (
     get_shared_mem0_client,
     run_shared_mem0_operation,
 )
+from utils.safe_logging import safe_log_exception
 
 
 LOGGER = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ class Mem0PresentationMemoryService:
             if isinstance(exc, SystemExit):
                 self._disable_runtime("mem0 runtime failed while adding memory", exc=exc)
                 return
-            LOGGER.exception(
+            safe_log_exception(LOGGER,
                 "Failed to add mem0 memory for presentation_id=%s", presentation_id
             )
 
@@ -211,7 +212,7 @@ class Mem0PresentationMemoryService:
             if isinstance(exc, SystemExit):
                 self._disable_runtime("mem0 runtime failed while searching memory", exc=exc)
                 return ""
-            LOGGER.exception(
+            safe_log_exception(LOGGER,
                 "Failed to search mem0 context for presentation_id=%s", presentation_id
             )
             return ""

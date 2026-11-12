@@ -21,6 +21,7 @@ from utils.get_env import (
     get_web_search_provider_env,
 )
 from utils.llm_provider import get_llm_provider
+from utils.safe_logging import safe_log, safe_log_exception
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MAX_RESULTS = 5
@@ -108,7 +109,7 @@ async def search_web(query: str, max_results: int | None = None) -> list[WebSear
             detail="Web search is disabled unless an external provider is selected",
         )
     started_at = time.monotonic()
-    LOGGER.info(
+    safe_log(LOGGER, logging.INFO,
         "Web search started: provider=%s limit=%d query=%r",
         provider.value,
         limit,
@@ -136,7 +137,7 @@ async def search_web(query: str, max_results: int | None = None) -> list[WebSear
                     detail=f"Unsupported web search provider: {provider.value}",
                 )
     except Exception:
-        LOGGER.exception(
+        safe_log_exception(LOGGER,
             "Web search failed: provider=%s query=%r",
             provider.value,
             query[:200],

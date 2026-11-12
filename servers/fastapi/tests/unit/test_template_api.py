@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import logging
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -42,6 +43,59 @@ from models.sql.template_v2 import TemplateV2
 from models.theme_data import PresentationThemeData
 from services.export_task_service import PptxToJsonDocument
 from templates.v2.models.layouts import LayoutGenerationOptions, MergedComponents, RawSlideLayouts, SlideLayouts
+
+
+def test_template_source_logs_escape_untrusted_urls(monkeypatch, caplog):
+    from api.v1.ppt.endpoints import template
+
+    value = "/app_data/uploads/missing\nFORGED\r\x1b[2J.pptx"
+    monkeypatch.setattr(template, "resolve_app_path_to_filesystem", lambda _url: None)
+    with caplog.at_level(logging.INFO, logger=template.LOGGER.name):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(template._prepare_template_source(
+                InitTemplateRequest(pptx_url=value, slide_image_urls=["/app_data/images/control.png"]), operation="init"
+            ))
+    assert error.value.status_code == 400
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert all("\n" not in message and "\r" not in message and "\x1b" not in message for message in messages)
+    assert all(repr(value) in message for message in messages)
+
+
+def test_template_source_logs_escape_owned_paths_without_changing_converter_input(monkeypatch, caplog):
+    from api.v1.ppt.endpoints import template
+
+    value = "/owned/uploads/deck\nFORGED\r\x1b[2J.pptx"
+    monkeypatch.setattr(template, "resolve_app_path_to_filesystem", lambda _url: value)
+    monkeypatch.setattr(template.os.path, "isfile", lambda _path: True)
+    convert = AsyncMock(side_effect=RuntimeError("conversion control"))
+    monkeypatch.setattr(template.EXPORT_TASK_SERVICE, "convert_pptx_to_json", convert)
+    with caplog.at_level(logging.INFO, logger=template.LOGGER.name):
+        with pytest.raises(RuntimeError, match="conversion control"):
+            asyncio.run(template._prepare_template_source(
+                InitTemplateRequest(pptx_url="/app_data/uploads/deck.pptx", slide_image_urls=["/app_data/images/control.png"]), operation="init"
+            ))
+    convert.assert_awaited_once_with(value)
+    message = caplog.records[-1].getMessage()
+    assert repr(value) in message
+    assert "\n" not in message and "\r" not in message and "\x1b" not in message
+
+
+@pytest.mark.parametrize("name", [None, "custom\nFORGED\r\x1b[2J"])
+def test_template_persistence_logs_escape_names_and_preserve_saved_values(tmp_path, fake_async_session, monkeypatch, caplog, name):
+    from api.v1.ppt.endpoints import template
+
+    filename = "deck\nFORGED\r\x1b[2J.pptx"
+    source = tmp_path / filename
+    source.write_bytes(b"pptx")
+    monkeypatch.setattr(template, "resolve_app_path_to_filesystem", lambda _url: str(source))
+    monkeypatch.setattr(template.EXPORT_TASK_SERVICE, "convert_pptx_to_json", AsyncMock(return_value=PptxToJsonDocument(**RAW_LAYOUTS)))
+    with caplog.at_level(logging.INFO, logger=template.LOGGER.name):
+        asyncio.run(template.init_template(InitTemplateRequest(
+            pptx_url="/app_data/uploads/source.pptx", slide_image_urls=["/app_data/images/control.png"], name=name
+        ), sql_session=fake_async_session))
+    assert fake_async_session.added[0].name == (name or filename[:-5])
+    assert all("\n" not in record.getMessage() and "\r" not in record.getMessage() and "\x1b" not in record.getMessage() for record in caplog.records)
 
 
 RAW_LAYOUTS = {

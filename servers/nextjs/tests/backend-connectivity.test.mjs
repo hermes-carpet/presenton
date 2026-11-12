@@ -19,7 +19,7 @@ test.before(async () => {
   await writeFile(
     entryFile,
     [
-      `export { assertBackendReachable, BackendConnectionError, normalizeBackendAssetUrls, resolveBackendAssetUrl } from ${JSON.stringify(path.resolve("utils/api.ts"))};`,
+      `export { assertBackendReachable, BackendConnectionError, normalizeBackendAssetUrls, resolveBackendAssetUrl, getApiUrl, getFastAPIUrl } from ${JSON.stringify(path.resolve("utils/api.ts"))};`,
       `export { clearOllamaModelsCache, isOllamaModelAvailable } from ${JSON.stringify(path.resolve("utils/providerUtils.ts"))};`,
     ].join("\n"),
   );
@@ -41,6 +41,50 @@ test.after(async () => {
   if (temporaryDirectory) {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
+});
+
+test("query parameters cannot redirect authenticated API requests to an unconfigured origin", async () => {
+  const oldWindow = globalThis.window;
+  const oldFetch = globalThis.fetch;
+  try {
+    for (const electron of [false, true]) {
+      for (const origin of ["https://collector.example", "https://backend.example.evil.test", "https://backend.example@collector.example", "http://backend.example", "https://backend.example:8443"]) {
+        globalThis.window = {
+          location: { origin: "https://presenton.example", search: `?fastapiUrl=${encodeURIComponent(origin)}` },
+          env: { NEXT_PUBLIC_FAST_API: "https://backend.example" },
+          ...(electron ? { electron: {} } : {}),
+        };
+        const calls = [];
+        globalThis.fetch = async (url) => {
+          calls.push(url);
+          return Response.json({ configured: true });
+        };
+        await connectivity.assertBackendReachable();
+        assert.equal(connectivity.getFastAPIUrl(), electron ? "https://backend.example" : "https://presenton.example");
+        assert.deepEqual(calls, [electron ? "https://backend.example/api/v1/auth/status" : "/api/v1/auth/status"]);
+      }
+    }
+  } finally { globalThis.window = oldWindow; globalThis.fetch = oldFetch; }
+});
+
+test("trusted backend queries preserve Electron, export and custom backend connections", () => {
+  const oldWindow = globalThis.window;
+  try {
+    for (const backend of ["http://127.0.0.1:40000", "http://localhost:5001", "https://custom-backend.example"]) {
+      for (const electron of [false, true]) {
+        globalThis.window = {
+          location: { origin: "http://127.0.0.1:40001", search: `?fastapiUrl=${encodeURIComponent(backend + "/")}` },
+          env: { NEXT_PUBLIC_FAST_API: backend },
+          ...(electron ? { electron: {} } : {}),
+        };
+        assert.equal(connectivity.getApiUrl("/api/v1/ppt/presentation"), `${backend}/api/v1/ppt/presentation`);
+      }
+    }
+    globalThis.window = { location: { origin: "https://presenton.example", search: "" }, env: { NEXT_PUBLIC_FAST_API: "http://fastapi:8000" } };
+    assert.equal(connectivity.getApiUrl("/api/v1/auth/status"), "/api/v1/auth/status");
+    globalThis.window.location.search = "?fastapiUrl=https%3A%2F%2Fpresenton.example";
+    assert.equal(connectivity.getApiUrl("/api/v1/auth/status"), "https://presenton.example/api/v1/auth/status");
+  } finally { globalThis.window = oldWindow; }
 });
 
 test("Next.js public font URLs are not rewritten as backend assets", () => {

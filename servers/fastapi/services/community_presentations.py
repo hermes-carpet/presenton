@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -203,6 +204,13 @@ def normalize_community_ids(values: Sequence[int] | None) -> list[int]:
 
 async def _cloud_get(path: str, params: dict[str, Any] | None = None) -> Any:
     require_community_enabled()
+    if not re.fullmatch(r"(?:/[1-9][0-9]*)?", path):
+        raise community_http_error(
+            422,
+            code="community_presentation_id_invalid",
+            message="The community presentation ID must be a positive integer.",
+            retryable=False,
+        )
     url = f"{get_community_api_url()}{path}"
     timeout = aiohttp.ClientTimeout(total=30)
     try:
@@ -211,7 +219,17 @@ async def _cloud_get(path: str, params: dict[str, Any] | None = None) -> Any:
             headers={"User-Agent": "Presenton-Open-Source/1.0"},
             trust_env=True,
         ) as session:
-            async with session.get(url, params=params) as response:
+            async with session.get(url, params=params, allow_redirects=False) as response:
+                if 300 <= response.status < 400:
+                    raise community_http_error(
+                        502,
+                        code="community_redirect_not_allowed",
+                        message=(
+                            "The Community service redirected this request. "
+                            "Configure its final API URL in PRESENTON_COMMUNITY_API_URL."
+                        ),
+                        retryable=False,
+                    )
                 if response.status >= 400:
                     raise community_upstream_http_error(
                         response.status,

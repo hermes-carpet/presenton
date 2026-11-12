@@ -1,5 +1,6 @@
 import logging
 import os
+from utils.safe_logging import safe_log
 
 try:
     import resource
@@ -21,7 +22,7 @@ def memory_snapshot_mb() -> dict[str, int]:
 
 
 def log_memory(logger: logging.Logger, label: str, **fields: object) -> None:
-    logger.info("[memory] %s %s extra=%s", label, memory_snapshot_mb(), fields)
+    safe_log(logger, logging.INFO, "[memory] %s %s extra=%s", label, memory_snapshot_mb(), fields)
     try:
         import sentry_sdk  # type: ignore
 

@@ -21,6 +21,8 @@ from utils.process_slides import (
 )
 from api.v1.ppt.endpoints.presentation import (
     _apply_template_content_to_ui,
+    _get_presentation_stream_layout,
+    _hydrate_template_slide_ui,
     _template_slide_ui,
 )
 
@@ -51,7 +53,7 @@ async def edit_slide(
         prompt,
     )
 
-    presentation_layout = presentation.get_layout()
+    presentation_layout = _get_presentation_stream_layout(presentation)
     slide_layout = await get_slide_layout_from_prompt(
         prompt,
         presentation_layout,
@@ -78,7 +80,7 @@ async def edit_slide(
         image_generation_service,
         slide.content,
         edited_slide_content,
-        icon_weight=presentation.get_layout().icon_weight,
+        icon_weight=presentation_layout.icon_weight,
         use_template_asset_fields=(
             _is_template_layout_payload(presentation.layout)
             or isinstance(slide.ui, dict)
@@ -109,7 +111,13 @@ async def edit_slide(
 
     sql_session.add(slide)
     slide.content = edited_slide_content
+    if (
+        slide.layout != slide_layout.id
+        and _is_template_layout_payload(presentation.layout)
+    ):
+        slide.ui = _template_slide_ui(presentation.layout, slide_layout.id)
     slide.layout = slide_layout.id
+    _hydrate_template_slide_ui(slide, presentation.layout)
     slide.speaker_note = edited_slide_content.get("__speaker_note__", "")
     sql_session.add_all(new_assets)
     await sql_session.commit()
