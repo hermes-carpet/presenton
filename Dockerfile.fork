@@ -91,13 +91,12 @@ for group in os.environ.get("FAST_MOVING_GROUPS", "").split():
     (site / f"presenton-fast-{group_name}.pth").write_text(f"{dest}\n")
 PY
 
-# Fork: bake mem0's default embedding model into the image. mem0 creates
-# fastembed's TextEmbedding without a cache_dir, so fastembed uses
-# FASTEMBED_CACHE_PATH, else /tmp/fastembed_cache; upstream's warm-up wrote it
-# there in the builder only, so every container downloaded it at runtime.
-# Done before the code copy, so this layer only changes with uv.lock.
-ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python -c "from fastembed import TextEmbedding; next(TextEmbedding(model_name='BAAI/bge-small-en-v1.5').embed(['warmup']))" \
+# Fork: bake mem0's default dense model and Qdrant's BM25 model (the ones
+# upstream's warm_fastembed_cache.py prepares) before the code copy, so this
+# layer only changes with uv.lock; the warm-up script below then finds them
+# cached.
+ENV FASTEMBED_CACHE_PATH=/root/.cache/presenton/fastembed
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python -c "from fastembed import SparseTextEmbedding, TextEmbedding; next(TextEmbedding(model_name='BAAI/bge-small-en-v1.5').embed(['warmup'])); next(SparseTextEmbedding(model_name='Qdrant/bm25').embed(['warmup']))" \
     && rm -rf /root/.cache/huggingface/xet/logs
 
 # The backend project is not installed into the venv. A constant .pth file puts
@@ -115,6 +114,11 @@ ENV HF_HOME=/root/.cache/huggingface \
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python scripts/warm_fastembed_cache.py \
     # Fork: drop huggingface_hub's timestamped download logs (the only files it
     # leaves under HF_HOME), so the copied cache dir is identical across builds.
+    && rm -rf /root/.cache/huggingface/xet/logs
+# The models must load offline, and the font catalog must be found from outside
+# the backend directory (as at runtime).
+RUN --network=none HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python scripts/warm_fastembed_cache.py \
+    && (cd /tmp && PYTHONDONTWRITEBYTECODE=1 /opt/venv/bin/python -c "from templates.pptx_font_utils import get_static_font_catalog; assert get_static_font_catalog(), 'Packaged font catalog is empty'") \
     && rm -rf /root/.cache/huggingface/xet/logs
 
 # Fork: move the large, rarely changing data dirs (icons, icon index) out so the
@@ -135,6 +139,9 @@ FROM node:22-bookworm-slim AS nextjs-builder
 WORKDIR /app/servers/nextjs
 
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# Match the npm version that supports the frontend lockfile's range overrides.
+RUN npm install --global npm@11.16.0
 
 COPY servers/nextjs/package.json servers/nextjs/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
@@ -158,16 +165,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY package.json /app/
+COPY package.json package-lock.json /app/
 
 RUN mkdir -p /app/document-extraction-liteparse \
-    && cd /app/document-extraction-liteparse \
-    && npm init -y \
-    && npm install @llamaindex/liteparse@1.5.2 --omit=dev
+    && cp /app/package.json /app/package-lock.json /app/document-extraction-liteparse/ \
+    && npm --prefix /app/document-extraction-liteparse ci --omit=dev
 
 COPY electron/resources/document-extraction/liteparse_runner.mjs /app/document-extraction-liteparse/liteparse_runner.mjs
 COPY scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
 COPY scripts/run-presentation-export.mjs /app/scripts/run-presentation-export.mjs
+COPY scripts/export-permissions.cjs /app/scripts/export-permissions.cjs
 RUN rm -rf /app/presentation-export \
     && node /app/scripts/sync-presentation-export.cjs --force
 
@@ -230,7 +237,7 @@ ENV APP_DATA_DIRECTORY=/app_data \
     START_OLLAMA=false \
     PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chrome-headless-shell \
     LITEPARSE_TESSDATA_PATH=/usr/share/tessdata \
-    FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+    FASTEMBED_CACHE_PATH=/root/.cache/presenton/fastembed
 
 RUN set -eux; \
     printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot; \
@@ -335,13 +342,14 @@ COPY --link --from=fastapi-builder /opt/venv-fast/mcp /opt/venv-fast/mcp
 COPY --link --from=fastapi-builder /opt/venv-fast/llmai /opt/venv-fast/llmai
 COPY --link --from=fastapi-builder /root/.cache/huggingface /root/.cache/huggingface
 COPY --link --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/presenton/fastembed-icons
-COPY --link --from=fastapi-builder /root/.cache/fastembed /root/.cache/fastembed
+COPY --link --from=fastapi-builder /root/.cache/presenton/fastembed /root/.cache/presenton/fastembed
 COPY --link templates /app/templates
 
 COPY --link --from=assets-builder /app/package.json /app/package.json
 COPY --link --from=assets-builder /app/document-extraction-liteparse /app/document-extraction-liteparse
 COPY --link --from=assets-builder /app/presentation-export /app/presentation-export
 COPY --link --from=assets-builder /app/scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
+COPY --link --from=assets-builder /app/scripts/export-permissions.cjs /app/scripts/export-permissions.cjs
 
 RUN test -f /app/presentation-export/runner.mjs \
     && test -f /app/presentation-export/node_modules/@presenton/export-core/dist/index.js
@@ -360,6 +368,7 @@ COPY --link --from=fastapi-builder /app/servers/fastapi /app/servers/fastapi
 COPY --link start.js LICENSE NOTICE ./
 COPY --link scripts/presenton-terminal-banner.mjs /app/scripts/presenton-terminal-banner.mjs
 COPY --link scripts/user-config-env.cjs /app/scripts/user-config-env.cjs
+COPY --link scripts/run-node-script.mjs /app/scripts/run-node-script.mjs
 COPY --link nginx.conf /etc/nginx/nginx.conf
 
 EXPOSE 80
