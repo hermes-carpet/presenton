@@ -1,8 +1,8 @@
 """Pre-download FastEmbed / Hugging Face weights at Docker image build time.
 
-Icon search uses AllMiniLML6V2 into ``fastembed_cache`` under the package tree.
-Mem0 OSS defaults to ``BAAI/bge-small-en-v1.5`` via Hugging Face Hub under
-``HF_HOME`` (default ``~/.cache/huggingface``).
+Icon search uses AllMiniLML6V2 in ``PRESENTON_FASTEMBED_ICON_CACHE_DIR``.
+Mem0 OSS uses ``BAAI/bge-small-en-v1.5`` and ``Qdrant/bm25`` in
+``FASTEMBED_CACHE_PATH`` (default ``/tmp/fastembed_cache``, independent of ``HF_HOME``).
 """
 
 from pathlib import Path
@@ -43,6 +43,12 @@ def main() -> None:
         f"Fastembed cache prepared at {ICON_FINDER_SERVICE.cache_directory}"
     )
     _warm_mem0_default_fastembed()
+    # Qdrant uses BM25 even when Mem0's dense embedder is a different provider.
+    from fastembed import SparseTextEmbedding
+
+    sparse_embedder = SparseTextEmbedding(model_name="Qdrant/bm25")
+    next(sparse_embedder.embed(["warmup"]))
+    print("Mem0 BM25 model warmed: Qdrant/bm25")
 
 
 if __name__ == "__main__":

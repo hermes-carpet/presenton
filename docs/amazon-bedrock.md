@@ -111,7 +111,6 @@ docker run -it --name presenton -p 5001:80 \
   -e BEDROCK_MODEL="arn:aws:bedrock:us-east-1:471112542209:inference-profile/us.anthropic.claude-sonnet-4-6" \
   -e IMAGE_PROVIDER="pexels" \
   -e PEXELS_API_KEY="YOUR_PEXELS_KEY" \
-  -e CAN_CHANGE_KEYS="false" \
   -v "./app_data:/app_data" \
   ghcr.io/presenton/presenton:latest
 ```

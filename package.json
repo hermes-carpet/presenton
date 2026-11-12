@@ -1,11 +1,11 @@
 {
   "name": "presenton",
-  "version": "0.9.11-beta",
-  "presentationExportVersion": "v1.0.34",
+  "version": "0.9.12-beta",
+  "presentationExportVersion": "v1.0.51",
   "type": "module",
   "description": "Open-source AI presentation generator",
   "scripts": {
-    "test": "npm run test:template-converter && node --test scripts/package-metadata.test.mjs scripts/desktop-export.test.mjs scripts/sync-presentation-export.test.mjs scripts/user-config-env.test.mjs",
+    "test": "npm run test:template-converter && node --test scripts/package-metadata.test.mjs scripts/desktop-export.test.mjs scripts/sync-presentation-export.test.mjs scripts/user-config-env.test.mjs scripts/export-permissions.test.mjs scripts/document-parser-security.test.mjs scripts/sync-document-dependencies.test.mjs",
     "convert:template": "node scripts/convert-template.mjs",
     "convert:presentation-template": "node scripts/convert-presentation-template.mjs",
     "test:template-converter": "node --test scripts/convert-template.test.mjs scripts/convert-presentation-template.test.mjs",
@@ -15,6 +15,12 @@
   },
   "dependencies": {
     "@llamaindex/liteparse": "^1.5.2",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.5"
+  },
+  "overrides": {
+    "@llamaindex/liteparse": {
+      "sharp": "^0.35.5",
+      "zod": "^4.6.6"
+    }
   }
 }

@@ -595,18 +595,22 @@ function DiscoverControls({
 
   if (isStock) {
     return (
-      <div className="flex h-[41px] flex-none gap-2.5" aria-label={`Search ${providerLabel}`}>
-        <label className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[8px] border border-[rgba(219,219,219,0.6)] bg-white px-2.5">
-          <Search className="size-3.5 flex-none" strokeWidth={1.8} aria-hidden="true" />
+      <div className="flex h-[76px] flex-none gap-2.5" aria-label={`Search ${providerLabel}`}>
+        <label className="flex min-w-0 flex-1 items-start gap-2.5 rounded-[8px] border border-[rgba(219,219,219,0.6)] bg-white px-2.5 shadow-[0_4px_7px_rgba(0,0,0,0.04)] focus-within:border-[#B9BBC1]">
+          <Search className="mt-[15px] size-3.5 flex-none" strokeWidth={1.8} aria-hidden="true" />
           <textarea
             autoFocus
+            aria-label={`Search ${providerLabel} images`}
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && canRun) onRun();
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                if (canRun) onRun();
+              }
             }}
             placeholder="Search Image"
-            className="h-full min-w-0 flex-1 bg-transparent text-[14px] font-normal outline-none placeholder:text-[#999]"
+            className="h-full min-w-0 flex-1 resize-none bg-transparent px-0 py-3 text-[14px] font-normal leading-[21px] outline-none placeholder:text-[#999]"
           />
         </label>
         <button

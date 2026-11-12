@@ -24,11 +24,10 @@ from utils.runtime_limits import (
     BoundedTextBuffer,
     log_memory,
 )
+from utils.export_permissions import finalize_export_permissions
+from utils.safe_logging import safe_log
 
 LOGGER = logging.getLogger(__name__)
-
-EXPORT_DIRECTORY_MODE = 0o755
-EXPORT_FILE_MODE = 0o644
 
 
 def _localize_json_image_assets(
@@ -269,13 +268,16 @@ class ExportTaskService:
     @staticmethod
     def _ensure_output_readable(output_path: str) -> None:
         try:
-            os.chmod(os.path.dirname(output_path), EXPORT_DIRECTORY_MODE)
-            os.chmod(output_path, EXPORT_FILE_MODE)
+            finalize_export_permissions(output_path, ExportTaskService._permission_roots())
         except OSError as exc:
             raise HTTPException(
                 status_code=500,
                 detail=f"Export completed but output permissions could not be updated: {exc}",
             ) from exc
+
+    @staticmethod
+    def _permission_roots() -> list[str | None]:
+        return [get_app_data_directory_env(), get_temp_directory_env() or os.path.join(tempfile.gettempdir(), "presenton")]
 
     @staticmethod
     def _create_task_paths() -> tuple[str, str, str]:
@@ -426,7 +428,7 @@ class ExportTaskService:
         cookie_header: str | None = None,
     ) -> PresentationExportTaskResult:
         log_url = url.split("#", 1)[0] if "#" in url else url
-        LOGGER.info(
+        safe_log(LOGGER, logging.INFO,
             "[export_runtime] export_from_url url=%s format=%s cookie_header=%s",
             log_url,
             export_as,
@@ -809,6 +811,7 @@ class ExportTaskService:
     ) -> Any:
         owner_id = get_current_owner_id()
         if owner_id is None:
+            finalize_export_permissions(os.path.dirname(output_path), ExportTaskService._permission_roots(), recursive=True)
             return output_data
 
         source_dir = os.path.realpath(os.path.dirname(output_path))
@@ -836,6 +839,7 @@ class ExportTaskService:
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
         if os.path.realpath(target_dir) != source_dir:
             shutil.move(source_dir, target_dir)
+        finalize_export_permissions(target_dir, ExportTaskService._permission_roots(), recursive=True)
 
         source_url = f"/app_data/{root_name}/{session_id}"
         target_url = (

@@ -1,5 +1,6 @@
 import type { TemplateV2SurfaceSelectedDetail } from "@/components/slide-editor/events/events";
 import type { TemplateV2Layout } from "@/components/slide-editor/importing/template-v2-import";
+import type { BlankSlidePromptRequest } from "../../../_shared/blank-slide-prompt-event";
 import type {
   ChatAttachment,
   ChatConversationSummary,
@@ -128,6 +129,8 @@ export type ChatProps = {
   }) => void;
   onChatSendingStateChange?: (isSending: boolean) => void;
   onFollowModeChange?: (isEnabled: boolean) => void;
+  blankSlidePromptRequest?: BlankSlidePromptRequest | null;
+  onBlankSlidePromptConsumed?: (id: number) => void;
 };
 
 export type AssistantPromptMetrics = {

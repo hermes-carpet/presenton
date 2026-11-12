@@ -12,6 +12,15 @@ const nextConfig = {
   turbopack: {
     root: nextjsRoot,
   },
+  async headers() {
+    return [
+      {
+        source: "/vendor/fonts/:path*",
+        // Sandboxed community previews load public fonts from an opaque origin.
+        headers: [{ key: "Access-Control-Allow-Origin", value: "*" }],
+      },
+    ];
+  },
   ...(process.env.NODE_ENV !== "production"
     ? {
         allowedDevOrigins: [

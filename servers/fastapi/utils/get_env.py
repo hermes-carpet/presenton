@@ -1,6 +1,8 @@
 import os
 from typing import Literal
 
+from utils.image_config import LEGACY_GPT_IMAGE_PROVIDERS
+
 
 PresentationGenerationMode = Literal["both", "standard", "smart"]
 
@@ -12,10 +14,6 @@ def _is_truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def get_can_change_keys_env():
-    return os.getenv("CAN_CHANGE_KEYS")
 
 
 def get_presenton_public_url() -> str | None:
@@ -416,9 +414,14 @@ def get_gpt_image_2_quality_env():
     return None
 
 
-# Gpt Image 1.5 Quality
-def get_gpt_image_1_5_quality_env():
-    return os.getenv("GPT_IMAGE_1_5_QUALITY")
+# Shared GPT Image 2.5 Flare / Sunburst quality
+def get_gpt_image_2_5_quality_env():
+    quality = os.getenv("GPT_IMAGE_2_5_QUALITY")
+    if quality:
+        return quality
+    if os.getenv("IMAGE_PROVIDER") in LEGACY_GPT_IMAGE_PROVIDERS:
+        return os.getenv("GPT_IMAGE_1_5_QUALITY") or "medium"
+    return None
 
 
 # Codex OAuth

@@ -1,7 +1,7 @@
 "use client";
 
 import DOMPurify, { type Config as DOMPurifyConfig } from "dompurify";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useTailwindRuntimeReady } from "@/components/runtime/TailwindBrowserRuntime";
 import {
@@ -13,7 +13,9 @@ import {
   CHART_DATALABELS_SCRIPT_URL,
 } from "@/lib/chart-browser";
 import { TAILWIND_BROWSER_SCRIPT_URL } from "@/lib/tailwind-browser";
+import { applySmartSlideIconColors } from "@/lib/smart-slide-icons";
 import { useSmartChartInjection } from "./useSmartChartInjection";
+import SlidePreviewLoader from "./SlidePreviewLoader";
 
 const SLIDE_WIDTH = 1280;
 const SLIDE_HEIGHT = 720;
@@ -90,12 +92,14 @@ function LinuxInPageSmartHtmlSlide({
   fixedSize,
   title,
   executeScripts,
+  showLoader,
 }: {
   html: string;
   fonts?: unknown;
   fixedSize: boolean;
   title: string;
   executeScripts: boolean;
+  showLoader: boolean;
 }) {
   const tailwindReady = useTailwindRuntimeReady();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -105,9 +109,13 @@ function LinuxInPageSmartHtmlSlide({
     () => `smart-slide-preview-${Math.random().toString(36).slice(2)}`
   );
   const [sanitizedHtml, setSanitizedHtml] = useState("");
+  const [loadedHtml, setLoadedHtml] = useState<string | null>(null);
 
   useEffect(() => {
-    setSanitizedHtml(DOMPurify.sanitize(html, SANITIZE_CONFIG));
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    applySmartSlideIconColors(template.content, window.location.href);
+    setSanitizedHtml(DOMPurify.sanitize(template.innerHTML, SANITIZE_CONFIG));
   }, [html]);
 
   useSlideFontAssets(fonts, executeScripts);
@@ -117,6 +125,38 @@ function LinuxInPageSmartHtmlSlide({
     domRevision: sanitizedHtml,
     containerRef: slideRef,
   });
+
+  useEffect(() => {
+    const root = slideRef.current;
+    if (!showLoader || !root || !sanitizedHtml || !tailwindReady) return;
+
+    let cancelled = false;
+    let frame: number | undefined;
+    const cleanups: Array<() => void> = [];
+    const images = Array.from(root.querySelectorAll("img"));
+    const pendingImages = images.map((image) => {
+      if (image.complete) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const done = () => resolve();
+        image.addEventListener("load", done, { once: true });
+        image.addEventListener("error", done, { once: true });
+        cleanups.push(() => {
+          image.removeEventListener("load", done);
+          image.removeEventListener("error", done);
+        });
+      });
+    });
+    void Promise.all([...pendingImages, document.fonts.ready]).then(() => {
+      if (cancelled) return;
+      frame = window.requestAnimationFrame(() => setLoadedHtml(sanitizedHtml));
+    });
+
+    return () => {
+      cancelled = true;
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      cleanups.forEach((cleanup) => cleanup());
+    };
+  }, [sanitizedHtml, showLoader, tailwindReady]);
 
   useEffect(() => {
     if (fixedSize) return;
@@ -130,16 +170,19 @@ function LinuxInPageSmartHtmlSlide({
   }, [fixedSize]);
 
   const scale = fixedSize ? 1 : width ? Math.min(width / SLIDE_WIDTH, 1) : 0;
+  const isLoading = !tailwindReady || !sanitizedHtml || loadedHtml !== sanitizedHtml;
 
   return (
     <div
       ref={containerRef}
+      aria-busy={showLoader ? isLoading : undefined}
       className="relative w-full overflow-hidden bg-white"
       style={{
         width: fixedSize ? SLIDE_WIDTH : undefined,
         height: fixedSize ? SLIDE_HEIGHT : SLIDE_HEIGHT * (scale || 1),
       }}
     >
+      {showLoader && isLoading && <SlidePreviewLoader />}
       <div
         ref={slideRef}
         data-smart-slide-instance={instanceId}
@@ -162,15 +205,27 @@ function IframeSmartHtmlSlide({
   fonts,
   fixedSize,
   title,
+  showLoader,
 }: {
   html: string;
   fonts?: unknown;
   fixedSize: boolean;
   title: string;
+  showLoader: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
-  const srcDoc = useMemo(() => previewDocument(html, fonts), [fonts, html]);
+  const [srcDoc, setSrcDoc] = useState("");
+  const [loadedSrcDoc, setLoadedSrcDoc] = useState<string | null>(null);
+
+  useEffect(() => {
+    const document = new DOMParser().parseFromString(
+      previewDocument(html, fonts),
+      "text/html",
+    );
+    applySmartSlideIconColors(document, window.location.href);
+    setSrcDoc(`<!doctype html>${document.documentElement.outerHTML}`);
+  }, [fonts, html]);
 
   useEffect(() => {
     if (fixedSize) return;
@@ -184,16 +239,19 @@ function IframeSmartHtmlSlide({
   }, [fixedSize]);
 
   const scale = fixedSize ? 1 : width ? Math.min(width / SLIDE_WIDTH, 1) : 0;
+  const isLoading = !srcDoc || loadedSrcDoc !== srcDoc;
 
   return (
     <div
       ref={containerRef}
+      aria-busy={showLoader ? isLoading : undefined}
       className="relative w-full overflow-hidden bg-white"
       style={{
         width: fixedSize ? SLIDE_WIDTH : undefined,
         height: fixedSize ? SLIDE_HEIGHT : SLIDE_HEIGHT * (scale || 1),
       }}
     >
+      {showLoader && isLoading && <SlidePreviewLoader />}
       <div
         className="absolute left-1/2 top-0"
         style={{
@@ -204,13 +262,17 @@ function IframeSmartHtmlSlide({
           opacity: scale ? 1 : 0,
         }}
       >
-        <iframe
-          className="block h-[720px] w-[1280px] border-0 bg-white"
-          sandbox="allow-scripts"
-          srcDoc={srcDoc}
-          tabIndex={-1}
-          title={title}
-        />
+        {srcDoc && (
+          <iframe
+            key={srcDoc}
+            className="block h-[720px] w-[1280px] border-0 bg-white"
+            sandbox="allow-scripts"
+            srcDoc={srcDoc}
+            tabIndex={-1}
+            title={title}
+            onLoad={() => setLoadedSrcDoc(srcDoc)}
+          />
+        )}
       </div>
     </div>
   );
@@ -222,31 +284,37 @@ export default function SmartHtmlSlide({
   fixedSize = false,
   title = "Smart presentation slide",
   executeScripts = true,
+  showLoader = false,
 }: {
   html: string;
   fonts?: unknown;
   fixedSize?: boolean;
   title?: string;
   executeScripts?: boolean;
+  showLoader?: boolean;
 }) {
   if (USE_LINUX_IN_PAGE_RENDERER) {
     return (
       <LinuxInPageSmartHtmlSlide
+        key={showLoader ? html : undefined}
         fixedSize={fixedSize}
         fonts={fonts}
         html={html}
         title={title}
         executeScripts={executeScripts}
+        showLoader={showLoader}
       />
     );
   }
 
   return (
     <IframeSmartHtmlSlide
+      key={showLoader ? html : undefined}
       fixedSize={fixedSize}
       fonts={fonts}
       html={html}
       title={title}
+      showLoader={showLoader}
     />
   );
 }

@@ -325,7 +325,19 @@ def _preview_asset_url_to_data_uri(
     ):
         mime_type = "image/svg+xml"
     else:
-        mime_type = mimetypes.guess_type(resolved)[0] or "application/octet-stream"
+        # Windows registry MIME associations can identify bundled fonts as
+        # application/octet-stream. Keep embedded font types deterministic.
+        font_mime_types = {
+            ".ttf": "font/ttf",
+            ".otf": "font/otf",
+            ".woff": "font/woff",
+            ".woff2": "font/woff2",
+        }
+        mime_type = (
+            font_mime_types.get(Path(resolved).suffix.lower())
+            or mimetypes.guess_type(resolved)[0]
+            or "application/octet-stream"
+        )
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 

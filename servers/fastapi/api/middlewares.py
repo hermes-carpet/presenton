@@ -16,14 +16,13 @@ from api.v1.auth.users import get_jwt_strategy
 from models.sql.user import User
 from services.database import async_session_maker
 from services.presenton_cloud_proxy import maybe_proxy_presenton_cloud_request
-from utils.get_env import get_can_change_keys_env, is_disable_auth_enabled
+from utils.get_env import is_disable_auth_enabled
 from utils.user_config import update_env_with_user_config
 
 
 class UserConfigEnvUpdateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if get_can_change_keys_env() != "false":
-            update_env_with_user_config()
+        update_env_with_user_config()
         return await call_next(request)
 
 
@@ -105,10 +104,13 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
                     path.startswith("/api/v1/ppt/fonts/")
                     and request.method in {"POST", "DELETE"}
                 )
-                or (
-                    path == "/api/v1/ppt/ollama/models/pull"
-                    and request.method == "POST"
-                )
+                or path in {
+                    "/api/v1/ppt/ollama/models/pull",
+                    "/api/v1/ppt/ollama/models/available",
+                    "/api/v1/ppt/openai/models/available",
+                    "/api/v1/ppt/images/test",
+                    "/api/v1/ppt/openrouter/providers/available",
+                }
             )
             if admin_only and (principal.method != "jwt" or not principal.is_admin):
                 return JSONResponse(

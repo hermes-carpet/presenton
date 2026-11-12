@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { addMainBreadcrumb, captureMainException } from "../sentry/main";
 import { safeError, safeLog, safeWarn } from "./safe-console";
+import { writePrivateFileSync } from "./private-storage";
 
 export type ChromiumCacheRecoveryStatus = {
   mode: "auto" | "force" | "off";
@@ -52,7 +53,7 @@ function writeSentinel(userDataDir: string, status: ChromiumCacheRecoveryStatus)
     quarantined: status.quarantined,
     removedStaleDirectories: status.removedStaleDirectories,
   };
-  fs.writeFileSync(getSentinelPath(userDataDir), `${JSON.stringify(payload, null, 2)}\n`);
+  writePrivateFileSync(getSentinelPath(userDataDir), `${JSON.stringify(payload, null, 2)}\n`);
 }
 
 function shouldRunRecovery(

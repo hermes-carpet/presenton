@@ -11,6 +11,7 @@ const path = require("path");
 const https = require("https");
 const http = require("http");
 const { execFileSync } = require("child_process");
+const { createRequire } = require("node:module");
 
 const repoRoot = path.join(__dirname, "..");
 const targetRoot = path.join(repoRoot, "presentation-export");
@@ -23,6 +24,8 @@ const installedPackageJson = path.join(
   "package.json",
 );
 const sourceRunner = path.join(repoRoot, "scripts", "run-presentation-export.mjs");
+const sourcePermissions = path.join(repoRoot, "scripts", "export-permissions.cjs");
+const targetPermissions = path.join(targetRoot, "export-permissions.cjs");
 const versionManifestPath = path.join(targetRoot, "presenton-export-version.json");
 const packageJsonFile = path.join(repoRoot, "package.json");
 const cacheDir = path.join(repoRoot, ".cache", "presentation-export");
@@ -55,14 +58,37 @@ function packagePath(root, packageName) {
   return path.join(root, "node_modules", ...packageName.split("/"), "package.json");
 }
 
+function resolvedPackagePath(root, packageName, fromPackage = packagePath(root, "@presenton/export-core")) {
+  // Check the copy Node will load, including dependencies nested below the engine.
+  const boundary = path.resolve(root) + path.sep;
+  for (const directory of createRequire(fromPackage).resolve.paths(packageName) || []) {
+    const candidate = path.join(directory, ...packageName.split("/"), "package.json");
+    if (candidate.startsWith(boundary) && fs.existsSync(candidate)) return candidate;
+  }
+  return packagePath(root, packageName);
+}
+
+function versionAtLeast(version, minimum) {
+  if (!/^\d+\.\d+\.\d+$/.test(version || "")) return false;
+  const actual = version.split(".").map(Number);
+  const expected = minimum.split(".").map(Number);
+  for (let index = 0; index < 3; index++) {
+    if (actual[index] !== expected[index]) return actual[index] > expected[index];
+  }
+  return true;
+}
+
 function validateSharpRuntime(root, platformArch = getRuntimePlatformArch()) {
-  const sharpPackagePath = packagePath(root, "sharp");
+  const sharpPackagePath = resolvedPackagePath(root, "sharp");
   if (!fs.existsSync(sharpPackagePath)) {
     return { ok: false, reason: `Missing Sharp package: ${sharpPackagePath}` };
   }
 
   try {
     const sharpPackage = readJsonFile(sharpPackagePath);
+    if (!versionAtLeast(sharpPackage.version, "0.35.5")) {
+      return { ok: false, reason: `Sharp ${sharpPackage.version || "unknown"} requires security update to 0.35.5 or newer.` };
+    }
     const optionalDependencies = sharpPackage.optionalDependencies || {};
     const nativePackageName = `@img/sharp-${platformArch}`;
     const nativePackageVersion = optionalDependencies[nativePackageName];
@@ -85,7 +111,7 @@ function validateSharpRuntime(root, platformArch = getRuntimePlatformArch()) {
     }
 
     for (const dependency of requiredPackages) {
-      const dependencyPath = packagePath(root, dependency.name);
+      const dependencyPath = resolvedPackagePath(root, dependency.name, sharpPackagePath);
       if (!fs.existsSync(dependencyPath)) {
         return {
           ok: false,
@@ -104,6 +130,20 @@ function validateSharpRuntime(root, platformArch = getRuntimePlatformArch()) {
     return { ok: true, sharpVersion: sharpPackage.version };
   } catch (error) {
     return { ok: false, reason: `Invalid Sharp runtime: ${error.message}` };
+  }
+}
+
+function validateExportRuntime(root, platformArch = getRuntimePlatformArch()) {
+  const sharp = validateSharpRuntime(root, platformArch);
+  if (!sharp.ok) return sharp;
+  try {
+    const katex = readJsonFile(resolvedPackagePath(root, "katex"));
+    if (!versionAtLeast(katex.version, "0.18.2")) {
+      return { ok: false, reason: `KaTeX ${katex.version || "unknown"} requires security update to 0.18.2 or newer.` };
+    }
+    return { ...sharp, katexVersion: katex.version };
+  } catch (error) {
+    return { ok: false, reason: `Invalid KaTeX runtime: ${error.message}` };
   }
 }
 
@@ -235,7 +275,7 @@ function validateExistingRuntime(expectedVersion) {
         reason: `Expected ${assetNameForVersion(expectedVersion)}, found ${manifest.package || "an unknown package"}.`,
       };
     }
-    const sharpRuntime = validateSharpRuntime(targetRoot);
+    const sharpRuntime = validateExportRuntime(targetRoot);
     if (!sharpRuntime.ok) {
       return sharpRuntime;
     }
@@ -257,6 +297,7 @@ function installRuntime(version, archivePath) {
   // Removing a mount point fails with EBUSY; clearing its contents is portable.
   clearDirectoryContents(targetRoot);
   fs.copyFileSync(sourceRunner, targetRunner);
+  fs.copyFileSync(sourcePermissions, targetPermissions);
   fs.writeFileSync(
     path.join(targetRoot, "package.json"),
     `${JSON.stringify(
@@ -264,26 +305,47 @@ function installRuntime(version, archivePath) {
         private: true,
         type: "module",
         dependencies: { "@presenton/export-core": `file:${archivePath}` },
+        overrides: { sharp: "0.35.5", katex: "0.18.10" },
       },
       null,
       2,
     )}\n`,
   );
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  execFileSync(
-    npm,
-    [
-      "install",
-      "--omit=dev",
-      "--ignore-scripts",
-      "--no-package-lock",
-      "--no-fund",
-      "--no-audit",
-      "--cache",
-      path.join(cacheDir, "npm"),
-    ],
-    { cwd: targetRoot, stdio: "inherit" },
+  const npmArgs = [
+    "install",
+    "--omit=dev",
+    "--ignore-scripts",
+    "--no-package-lock",
+    "--no-fund",
+    "--no-audit",
+  ];
+  const npmEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name.toLowerCase() !== "npm_config_cache"),
   );
+  npmEnv.npm_config_cache = path.join(cacheDir, "npm");
+  const npmOptions = {
+    cwd: targetRoot,
+    stdio: "inherit",
+    // Keep filesystem paths out of cmd.exe's command text on Windows.
+    env: npmEnv,
+  };
+  const npmCli = String(process.env.npm_execpath || "");
+  if (
+    process.platform === "win32" &&
+    /^npm-cli\.(?:c?js)$/i.test(path.basename(npmCli)) &&
+    fs.existsSync(npmCli)
+  ) {
+    // Recent Node.js releases reject direct execution of .cmd shims with EINVAL.
+    execFileSync(process.execPath, [npmCli, ...npmArgs], npmOptions);
+  } else if (process.platform === "win32") {
+    execFileSync(
+      process.env.ComSpec || "cmd.exe",
+      ["/d", "/s", "/c", "npm", ...npmArgs],
+      npmOptions,
+    );
+  } else {
+    execFileSync("npm", npmArgs, npmOptions);
+  }
   fs.writeFileSync(
     versionManifestPath,
     `${JSON.stringify(
@@ -299,6 +361,7 @@ async function main() {
   const existing = validateExistingRuntime(version);
   if (checkOnly) {
     if (!existing.ok) throw new Error(existing.reason);
+    if (!fs.existsSync(targetPermissions)) throw new Error(`Missing export permissions helper: ${targetPermissions}`);
     console.log(`[presentation-export] OK (${existing.packageVersion})`);
     return;
   }
@@ -306,6 +369,7 @@ async function main() {
     // The package pin can stay unchanged while the application's auth/export
     // bridge changes. Refresh that bridge before Electron copies the runtime.
     fs.copyFileSync(sourceRunner, targetRunner);
+    fs.copyFileSync(sourcePermissions, targetPermissions);
     console.log(`[presentation-export] Using export-core ${existing.packageVersion}`);
     return;
   }
@@ -343,4 +407,5 @@ module.exports = {
   clearDirectoryContents,
   getRuntimePlatformArch,
   validateSharpRuntime,
+  validateExportRuntime,
 };

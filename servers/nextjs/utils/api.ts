@@ -1,4 +1,4 @@
-import { extractApiErrorMessage } from "@/utils/apiErrorMessages";
+import { extractApiErrorMessage, statusErrorMessage } from "@/utils/apiErrorMessages";
 
 export const BACKEND_CONNECTION_ERROR_MESSAGE =
   "Check that the FastAPI backend is running and that the frontend can reach it.";
@@ -24,6 +24,7 @@ export async function getApiErrorMessage(
   response: Response,
   fallbackMessage: string
 ): Promise<string> {
+  fallbackMessage = statusErrorMessage(response.status, fallbackMessage);
   try {
     const errorData: unknown = await response.clone().json();
     return extractApiErrorMessage(errorData, fallbackMessage, response.status);
@@ -64,7 +65,14 @@ function getFastApiUrlFromQuery(): string | null {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return null;
     }
-    return parsed.origin;
+    // Export links may select a backend already configured by the application.
+    // A link must never introduce a new destination for credentials or API keys.
+    const configuredOrigin = getHttpOrigin(getConfiguredFastApiUrl());
+    if (configuredOrigin && parsed.origin === configuredOrigin) {
+      return configuredOrigin;
+    }
+    const pageOrigin = getHttpOrigin(window.location.origin);
+    return pageOrigin && parsed.origin === pageOrigin ? pageOrigin : null;
   } catch {
     return null;
   }
@@ -94,7 +102,7 @@ function resolveBackendPathForRuntime(path: string): string {
 
 // Utility to get the backend base URL.
 // - Browser web/docker: same origin (nginx proxy).
-// - Browser electron or query override: direct FastAPI origin.
+// - Browser electron or trusted query selection: direct FastAPI origin.
 // - Server-side: configured FastAPI origin fallback.
 export function getFastAPIUrl(): string {
   const queryFastApiUrl = getFastApiUrlFromQuery();

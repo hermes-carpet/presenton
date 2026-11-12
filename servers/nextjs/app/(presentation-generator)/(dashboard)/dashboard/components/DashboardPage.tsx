@@ -25,13 +25,15 @@ import { RootState } from "@/store/store";
 import { notify } from "@/components/ui/sonner";
 import { sanitizeAnalyticsError } from "@/utils/analytics";
 import { IMAGE_PROVIDERS, LLM_PROVIDERS } from "@/utils/providerConstants";
+import { BlankPresentationDialog } from "./BlankPresentationDialog";
+import styles from "./dashboardMotion.module.css";
 
 const GITHUB_REPOSITORY_URL = "https://github.com/presenton/presenton";
 const DISCORD_INVITE_URL = "https://discord.com/invite/9ZsKKxudNE";
 const APP_UPDATE_URL = "https://presenton.ai/download";
 
 const actionCardBase =
-  "absolute aspect-[16/9] h-[46.238px] w-[82.201px] rounded-[4.474px] border border-white/50 bg-cover bg-center bg-no-repeat shadow-[0_8px_18px_rgba(16,24,40,0.18)] transition-all duration-500 ease-out opacity-100 translate-y-0 scale-100";
+  "absolute aspect-[16/9] h-[46.238px] w-[82.201px] rounded-[4.474px] border border-white/50 bg-cover bg-center bg-no-repeat shadow-[0_8px_18px_rgba(16,24,40,0.18)]";
 
 const dashboardHeaderPill =
   "inline-flex shrink-0 items-center justify-center rounded-full text-[#191919] transition-colors hover:bg-[#F8F8FA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8] focus-visible:ring-offset-2";
@@ -52,21 +54,21 @@ const DashboardHeaderDivider = () => (
 );
 
 const FloatingActionCards = () => (
-  <div className="pointer-events-none absolute right-[14px] top-[-35px] z-0 hidden h-[64px] w-[158px] sm:block">
+  <div className={`${styles.floatingCards} pointer-events-none absolute right-[14px] top-[-35px] z-0 hidden h-[64px] w-[158px] sm:block`}>
     <div
-      className={`${actionCardBase} left-0 top-0 border-none group-hover/action:-translate-x-2 group-hover/action:-rotate-3 group-focus-visible/action:-translate-x-2 group-focus-visible/action:-rotate-3`}
+      className={`${actionCardBase} left-0 top-0 border-none`}
       style={{
         backgroundImage: "url('/create_presentation_card_3.png')",
       }}
     />
     <div
-      className={`${actionCardBase} left-[39px] top-1 z-10 border-none group-hover/action:-translate-y-1 group-hover/action:scale-105 group-focus-visible/action:-translate-y-1 group-focus-visible/action:scale-105`}
+      className={`${actionCardBase} left-[39px] top-1 z-10 border-none`}
       style={{
         backgroundImage: "url('/create_presentation_card_2.png')",
       }}
     />
     <div
-      className={`${actionCardBase} left-[76px] top-0 border-none group-hover/action:translate-x-2 group-hover/action:rotate-3 group-focus-visible/action:translate-x-2 group-focus-visible/action:rotate-3`}
+      className={`${actionCardBase} left-[76px] top-0 border-none`}
       style={{
         backgroundImage: "url('/create_presentation_card_1.png')",
       }}
@@ -98,7 +100,7 @@ const DashboardActionCard = ({
   mediaClassName = "w-[96px]",
 }: DashboardActionCardProps) => {
   const className =
-    "group/action relative isolate flex h-[90px] w-full min-w-0 overflow-visible rounded-[10.8px] border border-[#EDEEEF] bg-white text-[#191919] outline-none transition-all duration-300 hover:border-[#D7D8DE] hover:shadow-[0_10px_28px_rgba(16,24,40,0.08)] focus-visible:ring-2 focus-visible:ring-[#7A5AF8] focus-visible:ring-offset-4 disabled:cursor-wait disabled:opacity-70 disabled:hover:border-[#EDEEEF] disabled:hover:shadow-none";
+    `${styles.actionCard} motion-press group/action relative isolate flex h-[90px] w-full min-w-0 overflow-visible rounded-[10.8px] border border-[#EDEEEF] bg-white text-[#191919] outline-none hover:border-[#D7D8DE] hover:shadow-[0_10px_28px_rgba(16,24,40,0.08)] focus-visible:ring-2 focus-visible:ring-[#7A5AF8] focus-visible:ring-offset-4 disabled:cursor-wait disabled:opacity-70 disabled:hover:border-[#EDEEEF] disabled:hover:shadow-none`;
   const content = (
     <>
       {children}
@@ -400,6 +402,8 @@ const DashboardPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isCreatingBlankPresentation, setIsCreatingBlankPresentation] =
     useState(false);
+  const [isBlankPresentationDialogOpen, setIsBlankPresentationDialogOpen] =
+    useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deckViewMode, setDeckViewMode] = useState<"grid" | "list">("grid");
   const blankPresentationRequestInFlight = useRef(false);
@@ -446,7 +450,7 @@ const DashboardPage: React.FC = () => {
     void fetchPresentations();
   }, [fetchPresentations]);
 
-  const createBlankPresentation = useCallback(async () => {
+  const createBlankPresentation = useCallback(async (templateId?: string) => {
     if (blankPresentationRequestInFlight.current) return;
 
     blankPresentationRequestInFlight.current = true;
@@ -454,15 +458,18 @@ const DashboardPage: React.FC = () => {
     trackEvent(MixpanelEvent.Dashboard_New_Presentation_Clicked, {
       pathname,
       source: "dashboard_blank_presentation_card",
+      template_id: templateId,
+      creation_type: templateId ? "with_template" : "without_template",
     });
 
     try {
       const presentation =
-        await PresentationGenerationApi.createBlankPresentation();
+        await PresentationGenerationApi.createBlankPresentation(templateId);
       trackEvent(MixpanelEvent.Dashboard_Blank_Presentation_Created, {
         pathname,
         presentation_id: presentation.id,
         slide_count: presentation.n_slides,
+        template_id: templateId,
       });
       router.push(
         `/presentation?id=${encodeURIComponent(presentation.id)}&type=standard`,
@@ -499,8 +506,19 @@ const DashboardPage: React.FC = () => {
 
   return (
     <div className="relative min-h-screen w-full pb-10">
+      {isBlankPresentationDialogOpen && (
+        <BlankPresentationDialog
+          open
+          isCreating={isCreatingBlankPresentation}
+          onOpenChange={setIsBlankPresentationDialogOpen}
+          onContinueWithoutTemplate={() => void createBlankPresentation()}
+          onContinueWithTemplate={(template) =>
+            void createBlankPresentation(template.id)
+          }
+        />
+      )}
       <DashboardHeader />
-      <section className="relative z-10 overflow-visible pb-0 pl-3 pr-3 pt-[17px] sm:pl-6 sm:pr-[9px]">
+      <section className="motion-enter relative z-10 overflow-visible pb-0 pl-3 pr-3 pt-[17px] sm:pl-6 sm:pr-[9px]">
         <h2 className="w-full font-syne text-[16px] font-medium leading-[normal] text-[#191919]">
           Actions
         </h2>
@@ -529,7 +547,7 @@ const DashboardPage: React.FC = () => {
           </DashboardActionCard>
 
           <DashboardActionCard
-            onClick={() => void createBlankPresentation()}
+            onClick={() => setIsBlankPresentationDialogOpen(true)}
             disabled={isCreatingBlankPresentation}
             isLoading={isCreatingBlankPresentation}
             title={
@@ -549,7 +567,7 @@ const DashboardPage: React.FC = () => {
           />
         </div>
       </section>
-      <section className="relative z-10 mt-[46px] pl-3 pr-3 sm:pl-6 sm:pr-[9px]">
+      <section className="motion-fade motion-delay-1 relative z-10 mt-[46px] pl-3 pr-3 sm:pl-6 sm:pr-[9px]">
         <div className="mb-[14px] flex items-center justify-between gap-4">
           <h2 className="font-syne text-[16px] font-medium leading-[normal] text-[#191919]">
             Decks

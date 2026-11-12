@@ -23,4 +23,5 @@ class PresentationWithSlides(BaseModel):
     theme: Optional[dict[str, Any]] = None
     generation_mode: Literal["standard", "smart"] = "standard"
     type: Literal["standard", "smart"] = "standard"
+    can_regenerate: bool = False
     community_design_ids: Optional[List[int]] = None

@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runTask } from "@presenton/export-core";
+import { finalizeExportPermissions } from "./export-permissions.cjs";
+
+// Keep generated artifacts private until the owning service/proxy can read them.
+process.umask(0o027);
 
 function parseCookieHeader(cookieHeader) {
   if (!cookieHeader) return undefined;
@@ -113,6 +117,14 @@ async function main() {
     task,
     buildRunOptions(task, { fastapiUrl, cookieHeader }),
   );
+  if (typeof response !== "string") {
+    const files = response.type === "files" ? response.filePaths : [response.filePath];
+    for (const filename of files) {
+      finalizeExportPermissions(filename, [process.env.APP_DATA_DIRECTORY, process.env.TEMP_DIRECTORY], {
+        recursive: task.type === "pptx-to-html" || task.type === "pptx-to-json",
+      });
+    }
+  }
   const responsePath = taskPath.replace(/\.json$/i, ".response.json");
   await fs.writeFile(responsePath, JSON.stringify(normalizeResponse(response)), "utf8");
 }

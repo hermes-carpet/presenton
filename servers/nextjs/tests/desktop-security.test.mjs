@@ -37,6 +37,7 @@ test.before(async () => {
       builder.onLoad({ filter: /.*/, namespace: "test-paths" }, () => ({ contents: "export const getAppDataDir = () => process.env.APP_DATA_DIRECTORY; export const getTempDir = () => process.env.TEMP_DIRECTORY;", loader: "js" }));
     },
   }] });
+  process.env.CAN_CHANGE_KEYS = "false"; // Legacy deployments must no longer lock admins out.
   security = require(output);
   Object.assign(process.env, { PRESENTON_ELECTRON: "true", PRESENTON_DESKTOP_TOKEN: TOKEN, PRESENTON_DESKTOP_ORIGINS: "http://127.0.0.1:40001,http://127.0.0.1:40000", DISABLE_AUTH: "true", NEXT_PUBLIC_URL: "http://127.0.0.1:40001", NEXT_PUBLIC_FAST_API: "http://127.0.0.1:40000", FAST_API_INTERNAL_URL: "http://127.0.0.1:40000", APP_DATA_DIRECTORY: path.join(directory, "data"), TEMP_DIRECTORY: path.join(directory, "temp") });
   await mkdir(process.env.APP_DATA_DIRECTORY);
@@ -126,6 +127,41 @@ test("frontend provider saves pass the settings route JSON check", async () => {
   assert.equal(savedConfig.LLM, "custom");
   assert.equal(savedConfig.CUSTOM_MODEL, "local-model");
   assert.equal(security.store.getState().userConfig.llm_config.CUSTOM_MODEL, "local-model");
+});
+
+test("regular users receive redacted settings and cannot change provider keys", async () => {
+  const desktop = process.env.PRESENTON_ELECTRON;
+  delete process.env.PRESENTON_ELECTRON;
+  process.env.USER_CONFIG_PATH = path.join(directory, "userConfig.json");
+  await writeFile(process.env.USER_CONFIG_PATH, JSON.stringify({
+    LLM: "openai", OPENAI_MODEL: "test-model", OPENAI_API_KEY: "admin-only-key",
+    AUTH_SECRET_KEY: "private-auth-secret", DISABLE_IMAGE_GENERATION: true,
+  }));
+  let writes = 0;
+  globalThis.fetch = async (url, options) => {
+    if (url.endsWith("/auth/status")) {
+      return Response.json({ configured: true, authenticated: true, role: "user", user_id: "member" });
+    }
+    writes++;
+    throw new Error(`Unexpected provider request: ${url}`);
+  };
+  try {
+    const read = await security.configRoute.GET(request());
+    assert.equal(read.status, 200);
+    const config = await read.json();
+    assert.equal(config.OPENAI_API_KEY, "__configured__");
+    assert.equal(config.AUTH_SECRET_KEY, undefined);
+    assert.equal(config.OPENAI_MODEL, "test-model");
+    const update = await security.configRoute.POST(request(undefined, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ OPENAI_API_KEY: "replacement" }),
+    }));
+    assert.equal(update.status, 403);
+    assert.equal(writes, 0);
+  } finally {
+    process.env.PRESENTON_ELECTRON = desktop;
+    delete process.env.USER_CONFIG_PATH;
+  }
 });
 
 test("document readers preserve previews but deny credentials, tasks, traversal and symlinks", async () => {

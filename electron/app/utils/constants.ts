@@ -2,6 +2,7 @@ import { app } from "electron"
 import path from "path"
 import fs from "fs"
 import os from "os"
+import { ensurePrivateDirectory } from "./private-storage"
 
 export const localhost = "http://127.0.0.1"
 
@@ -99,8 +100,11 @@ function canUseDirectory(dir: string): boolean {
   }
 }
 
-function firstWritableDirectory(candidates: string[], label: string): string {
+function firstWritableDirectory(candidates: string[], label: string, privateDirectory = false): string {
   for (const candidate of candidates) {
+    if (privateDirectory) {
+      try { return ensurePrivateDirectory(candidate); } catch { continue; }
+    }
     if (canUseDirectory(candidate)) {
       return candidate;
     }
@@ -145,7 +149,7 @@ function getAppDataBaseDir(tempRoot: string): string {
         absoluteEnvPath("APPDATA"),
         absoluteEnvPath("LOCALAPPDATA"),
         home ? path.join(home, "AppData", "Roaming") : undefined,
-        fallback,
+        electronPathCandidate("userData") ? path.dirname(electronPathCandidate("userData")!) : undefined,
       ]),
       "app data"
     );
@@ -244,31 +248,34 @@ export function initializeAppPaths(): ElectronAppPaths {
     unique([
       electronPathCandidate("userData"),
       path.join(appDataBaseDir, appDirectoryName),
-      path.join(tempRoot, "presenton-user-data"),
+      process.platform === "win32" ? undefined : path.join(tempRoot, "presenton-user-data"),
     ]),
-    "user data"
+    "user data", true
   );
   const appDataDir = isDev
     ? firstWritableDirectory(
         unique([path.join(baseDir, "app_data"), path.join(userDataDir, "app_data")]),
-        "application data"
+        "application data", true
       )
     : userDataDir;
   const tempDir = firstWritableDirectory(
-    unique([path.join(tempRoot, "presenton"), path.join(userDataDir, "temp")]),
-    "temporary"
+    unique([
+      ...(process.platform === "win32" ? [] : [path.join(tempRoot, "presenton")]),
+      path.join(userDataDir, "temp"),
+    ]),
+    "temporary", true
   );
   const logsDir = firstWritableDirectory(
     unique([path.join(userDataDir, "logs"), path.join(tempDir, "logs")]),
-    "logs"
+    "logs", true
   );
   const cacheDir = firstWritableDirectory(
     unique([path.join(userDataDir, "Cache"), path.join(tempDir, "Cache")]),
-    "cache"
+    "cache", true
   );
   const crashDumpsDir = firstWritableDirectory(
     unique([path.join(userDataDir, "Crashpad"), path.join(tempDir, "Crashpad")]),
-    "crash dumps"
+    "crash dumps", true
   );
   const sessionDataDir = userDataDir;
 

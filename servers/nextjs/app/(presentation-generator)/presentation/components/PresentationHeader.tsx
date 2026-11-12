@@ -55,6 +55,7 @@ import { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog";
 import { sanitizeAnalyticsError } from "@/utils/analytics";
 import { v4 as uuidv4 } from "uuid";
 import StreamingGenerationMetrics from "./StreamingGenerationMetrics";
+import { PresentationGenerationApi } from "../../services/api/presentation-generation";
 
 const MAX_EXPORT_TITLE_LENGTH = 40;
 
@@ -110,6 +111,7 @@ const PresentationHeader = ({
   const [isExporting, setIsExporting] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [isRegenerateConfirmOpen, setIsRegenerateConfirmOpen] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
   /** Avoid committing on blur when Save/Cancel was used (focus/click ordering) */
@@ -125,6 +127,7 @@ const PresentationHeader = ({
     generationMetrics,
   } = useSelector((state: RootState) => state.presentationGeneration);
   const { onUndo, onRedo, canUndo, canRedo } = usePresentationUndoRedo();
+  const canRegenerate = presentationData?.can_regenerate === true && !isStreaming && !isRegenerating;
 
   useEffect(() => {
     if (isEditingTitle) {
@@ -382,29 +385,43 @@ const PresentationHeader = ({
       setIsExporting(false);
     }
   };
-  const handleReGenerate = () => {
-    setIsRegenerateConfirmOpen(false);
-    dispatch(clearPresentationData());
-    dispatch(clearHistory());
-    trackEvent(MixpanelEvent.Presentation_Regenerated, {
-      pathname,
-      presentation_id,
-      slide_count: presentationData?.slides?.length || 0,
-      generation_mode: generationMode,
-    });
-    if (generationMode === "smart") {
-      trackEvent(MixpanelEvent.Smart_Mode_Generation_Started, {
+  const handleReGenerate = async () => {
+    if (!canRegenerate) return;
+    setIsRegenerating(true);
+    try {
+      if (generationMode === "smart") {
+        await PresentationGenerationApi.regenerateSmartPresentation(presentation_id);
+      }
+      setIsRegenerateConfirmOpen(false);
+      dispatch(clearPresentationData());
+      dispatch(clearHistory());
+      trackEvent(MixpanelEvent.Presentation_Regenerated, {
         pathname,
         presentation_id,
         slide_count: presentationData?.slides?.length || 0,
-        source: "regenerate",
+        generation_mode: generationMode,
       });
+      if (generationMode === "smart") {
+        trackEvent(MixpanelEvent.Smart_Mode_Generation_Started, {
+          pathname,
+          presentation_id,
+          slide_count: presentationData?.slides?.length || 0,
+          source: "regenerate",
+        });
+      }
+      router.push(
+        `/presentation?id=${presentation_id}&stream=true${
+          generationMode === "smart" ? "&type=smart" : ""
+        }`
+      );
+    } catch (error) {
+      notify.error(
+        "Regeneration failed",
+        error instanceof Error ? error.message : "Please try again."
+      );
+    } finally {
+      setIsRegenerating(false);
     }
-    router.push(
-      `/presentation?id=${presentation_id}&stream=true${
-        generationMode === "smart" ? "&type=smart" : ""
-      }`
-    );
   };
   const downloadLink = (path: string, fileName: string) => {
     const link = document.createElement("a");
@@ -638,14 +655,24 @@ const PresentationHeader = ({
             </ToolTip>
           )}
           <div className="flex items-center gap-2 bg-[#F6F6F9] px-3.5 h-[38px] border border-[#EDECEC] rounded-[80px]">
-            <ToolTip content="Regenerate Presentation">
-              <button
-                type="button"
-                onClick={() => setIsRegenerateConfirmOpen(true)}
-                className="group"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-[#101323] group-hover:text-[#5141e5] duration-300" />
-              </button>
+            <ToolTip content={
+              canRegenerate
+                ? "Regenerate Presentation"
+                : isStreaming
+                  ? "Wait until generation finishes"
+                  : "Only AI-generated presentations can be regenerated"
+            }>
+              <span className="inline-flex">
+                <button
+                  type="button"
+                  aria-label="Regenerate presentation"
+                  disabled={!canRegenerate}
+                  onClick={() => setIsRegenerateConfirmOpen(true)}
+                  className="text-[#101323] enabled:hover:text-[#5141e5] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 duration-300" />
+                </button>
+              </span>
             </ToolTip>
             <Separator orientation="vertical" className="h-4" />
             <ToolTip content="Undo">
@@ -748,7 +775,7 @@ const PresentationHeader = ({
         </div>
       </div>
       <Dialog
-        open={isRegenerateConfirmOpen}
+        open={isRegenerateConfirmOpen && canRegenerate}
         onOpenChange={setIsRegenerateConfirmOpen}
       >
         <DialogContent className="w-[360px] rounded-2xl border-0 p-0 shadow-2xl sm:max-w-[360px]">
@@ -777,6 +804,7 @@ const PresentationHeader = ({
               type="button"
               variant="ghost"
               onClick={handleReGenerate}
+              disabled={!canRegenerate}
               className="h-auto flex-1 rounded-none rounded-br-2xl border-l border-gray-100 px-4 py-3.5 text-sm font-medium text-red-500 hover:bg-red-50 hover:text-red-600"
             >
               Regenerate

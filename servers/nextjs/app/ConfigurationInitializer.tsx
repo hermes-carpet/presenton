@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { setCanChangeKeys, setLLMConfig } from '@/store/slices/userConfig';
+import { setUserRole, setLLMConfig } from '@/store/slices/userConfig';
 import { hasValidLLMConfig, normalizeLLMConfig } from '@/utils/storeHelpers';
 import { usePathname, useRouter } from 'next/navigation';
 import { useDispatch, useSelector } from 'react-redux';
@@ -49,9 +49,8 @@ function ConfigurationLoadingScreen() {
 
 export function ConfigurationInitializer({ children }: { children: React.ReactNode }) {
   const dispatch = useDispatch();
-  const canChangeKeys = useSelector(
-    (state: RootState) => state.userConfig.can_change_keys
-  );
+  const role = useSelector((state: RootState) => state.userConfig.role);
+  const isAdmin = role === "admin";
 
   const route = usePathname();
   const shouldShowStartupSplash = !route?.startsWith("/pdf-maker");
@@ -75,6 +74,7 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
 
   useEffect(() => {
     if (
+      role === null ||
       route === '/' ||
       isSettingsRoute ||
       route.startsWith('/pdf-maker')
@@ -87,7 +87,7 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
     const revalidateProviderConfiguration = async () => {
       try {
         const configResponse = await fetch(
-          canChangeKeys ? '/api/user-config' : '/api/runtime-config',
+          isAdmin ? '/api/user-config' : '/api/runtime-config',
           {
             cache: 'no-store',
           }
@@ -99,9 +99,9 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
 
         const payload = await configResponse.json();
         const config = normalizeLLMConfig(
-          canChangeKeys ? payload : (payload.config || {})
+          isAdmin ? payload : (payload.config || {})
         );
-        const isConfigured = canChangeKeys
+        const isConfigured = isAdmin
           ? hasValidLLMConfig(config)
           : Boolean(payload.configured);
         selectedProvider = config.LLM;
@@ -114,10 +114,12 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
           if (!cancelled) {
             notify.warning(
               "Provider setup required",
-              "Choose and configure a text provider before opening other pages.",
+              isAdmin
+                ? "Choose and configure a text provider before opening other pages."
+                : "Ask the administrator to configure the AI providers in Settings.",
               { id: "provider-setup-required" }
             );
-            router.replace('/');
+            if (isAdmin) router.replace('/');
           }
           return;
         }
@@ -171,7 +173,7 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
     return () => {
       cancelled = true;
     };
-  }, [canChangeKeys, dispatch, isSettingsRoute, route, router]);
+  }, [role, isAdmin, dispatch, isSettingsRoute, route, router]);
 
   useEffect(() => {
     if (!shouldShowStartupSplash) {
@@ -221,14 +223,21 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
       return;
     }
 
-    let canChangeKeys = false;
+    let authenticatedRole: "admin" | "user" | null = null;
     try {
-      const res = await fetch('/api/can-change-keys');
-      if (!res.ok) throw new Error(`can-change-keys returned ${res.status}`);
+      const res = await fetch(getApiUrl('/api/v1/auth/status'), {
+        cache: 'no-store', credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`auth status returned ${res.status}`);
       const data = await res.json();
-      canChangeKeys = data.canChange ?? false;
+      if (data.authenticated) {
+        authenticatedRole = data.role === 'admin' ? 'admin' : data.role === 'user' ? 'user' : null;
+      }
+      if (!authenticatedRole) throw new Error('Authenticated role is required');
     } catch (e) {
-      console.error('Failed to fetch can-change-keys:', e);
+      console.error('Failed to fetch authenticated role:', e);
+      dispatch(setUserRole(null));
+      dispatch(setLLMConfig({}));
       notify.error(
         "Could not load configuration",
         "Your current page has been kept open. Refresh after checking the backend service.",
@@ -237,9 +246,9 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
       setIsLoading(false);
       return;
     }
-    dispatch(setCanChangeKeys(canChangeKeys));
+    dispatch(setUserRole(authenticatedRole));
 
-    if (canChangeKeys) {
+    if (authenticatedRole === 'admin') {
       let llmConfig: LLMConfig = {};
       try {
         const res = await fetch('/api/user-config');
@@ -325,10 +334,7 @@ export function ConfigurationInitializer({ children }: { children: React.ReactNo
         }
       } else if (
         route !== '/' &&
-        !(
-          isSettingsRoute &&
-          (llmConfig.LLM === 'codex' || llmConfig.LLM === 'presenton')
-        )
+        !isSettingsRoute
       ) {
         router.push('/');
         setLoadingToFalseAfterNavigatingTo('/');

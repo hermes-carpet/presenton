@@ -52,6 +52,10 @@ import {
   type TemplateV2SurfaceSelectedDetail,
 } from "@/components/slide-editor/events/events";
 import { isEditableTarget } from "@/components/slide-editor/model/core";
+import {
+  consumeWheelNavigation,
+  createWheelNavigationState,
+} from "../utils/wheelSlideNavigation";
 
 function hasTemplateV2Layouts(layout: unknown): boolean {
   if (!layout || typeof layout !== "object") return false;
@@ -136,8 +140,6 @@ const IDLE_LOADING_STATE: LoadingState = {
 
 const NAVIGATION_HINT_STORAGE_KEY = "presenton:editor-navigation-hint:v1";
 const NAVIGATION_HINT_KEYS = ["←", "↑", "↓", "→"];
-const NAVIGATION_SCROLL_THRESHOLD = 240;
-const NAVIGATION_SCROLL_WINDOW_MS = 800;
 
 const PresentationPage: React.FC<PresentationPageProps> = ({
   presentation_id,
@@ -180,7 +182,7 @@ const PresentationPage: React.FC<PresentationPageProps> = ({
   const templateV2EditorLoadedKeyRef = useRef<string | null>(null);
   const navigationHintShownRef = useRef(false);
   const navigationHintSlideRef = useRef<number | null>(null);
-  const navigationScrollIntentRef = useRef({ amount: 0, lastAt: 0 });
+  const navigationScrollIntentRef = useRef(createWheelNavigationState());
   const lastAutoOpenedSelectionRef = useRef<number | null>(null);
   const router = useRouter();
   const shouldPreloadTemplateV2Presentation =
@@ -225,9 +227,17 @@ const PresentationPage: React.FC<PresentationPageProps> = ({
 
   const closeMobileAssistant = useCallback(() => {
     setIsMobileAssistantOpen(false);
+    setIsRightPanelOpen(false);
     window.requestAnimationFrame(() => {
       mobileAssistantTriggerRef.current?.focus();
     });
+  }, []);
+
+  const handleActionsPanelOpenChange = useCallback((open: boolean) => {
+    setIsRightPanelOpen(open);
+    if (!window.matchMedia("(min-width: 1280px)").matches) {
+      setIsMobileAssistantOpen(open);
+    }
   }, []);
 
   useEffect(() => {
@@ -405,40 +415,36 @@ const PresentationPage: React.FC<PresentationPageProps> = ({
     }
 
     const handleWheel = (event: WheelEvent) => {
-      if (showNavigationHint || Math.abs(event.deltaY) < 4) return;
-
-      const now = Date.now();
-      const scrollIntent = navigationScrollIntentRef.current;
-      if (now - scrollIntent.lastAt > NAVIGATION_SCROLL_WINDOW_MS) {
-        scrollIntent.amount = 0;
+      if (
+        event.defaultPrevented ||
+        event.ctrlKey ||
+        event.metaKey ||
+        isEditableTarget(event.target)
+      ) {
+        return;
       }
 
-      const multiplier =
-        event.deltaMode === WheelEvent.DOM_DELTA_LINE
-          ? 16
-          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? window.innerHeight
-            : 1;
-      scrollIntent.amount += Math.abs(event.deltaY) * multiplier;
-      scrollIntent.lastAt = now;
+      const direction = consumeWheelNavigation(
+        navigationScrollIntentRef.current,
+        event,
+        Date.now(),
+      );
+      if (!direction) return;
 
-      if (scrollIntent.amount < NAVIGATION_SCROLL_THRESHOLD) return;
+      const currentSlide = Math.min(Math.max(selectedSlide, 0), slidesLength - 1);
+      const nextSlide = Math.min(
+        Math.max(currentSlide + direction, 0),
+        slidesLength - 1,
+      );
+      if (nextSlide === currentSlide) return;
 
-      scrollIntent.amount = 0;
-      navigationHintSlideRef.current = selectedSlide;
-      setShowNavigationHint(true);
+      event.preventDefault();
+      setSelectedSlide(nextSlide);
     };
 
-    canvas.addEventListener("wheel", handleWheel, { passive: true });
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleWheel);
-  }, [
-    isPresentMode,
-    isStreaming,
-    loading,
-    selectedSlide,
-    showNavigationHint,
-    slidesLength,
-  ]);
+  }, [isPresentMode, isStreaming, loading, selectedSlide, slidesLength]);
 
   useEffect(() => {
     if (
@@ -900,7 +906,7 @@ const PresentationPage: React.FC<PresentationPageProps> = ({
                     </kbd>
                   ))}
                 </span>
-                <span>or the left thumbnails</span>
+                <span>or scroll to change slides</span>
                 <button
                   type="button"
                   aria-label="Dismiss navigation hint"
@@ -987,7 +993,7 @@ const PresentationPage: React.FC<PresentationPageProps> = ({
             aria-modal={isMobileAssistantOpen ? true : undefined}
             className={cn(
               "h-screen w-[calc(100vw-16px)] max-w-[375px] shrink-0 flex-col bg-white shadow-[-12px_0_32px_rgba(16,24,40,0.18)] transition-[width] duration-200 xl:relative xl:z-auto xl:h-full xl:max-w-none xl:self-start xl:border-l xl:border-[#EDEEEF] xl:shadow-none",
-              isRightPanelOpen ? "xl:w-[383px]" : "xl:w-[90px]",
+              isRightPanelOpen ? "xl:w-[383px]" : "xl:w-[78px]",
               isMobileAssistantOpen
                 ? "fixed inset-y-0 right-0 z-[70] flex"
                 : "hidden xl:flex"
@@ -1036,7 +1042,7 @@ const PresentationPage: React.FC<PresentationPageProps> = ({
                 onAgentSlideFocus={handleAgentSlideFocus}
                 editingDisabled={editingDisabled}
                 panelOpen={isMobileAssistantOpen || isRightPanelOpen}
-                onPanelOpenChange={setIsRightPanelOpen}
+                onPanelOpenChange={handleActionsPanelOpenChange}
               />
             </div>
           </div>

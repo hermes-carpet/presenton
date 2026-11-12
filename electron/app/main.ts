@@ -368,7 +368,6 @@ async function startServers(fastApiPort: number, nextjsPort: number) {
         // The child inherits process.env, including every provider supported by
         // Docker. Keep only Electron-specific overrides here.
         DEBUG: isDev ? "True" : "False",
-        CAN_CHANGE_KEYS: process.env.CAN_CHANGE_KEYS,
         APP_DATA_DIRECTORY: appDataDir,
         TEMP_DIRECTORY: tempDir,
         USER_CONFIG_PATH: userConfigPath,
@@ -485,9 +484,7 @@ app.whenReady().then(async () => {
   createWindow(`${localhost}:${nextjsPort}`);
 
   try {
-    if (process.env.CAN_CHANGE_KEYS !== "false") {
-      syncUserConfigFromEnv();
-    }
+    syncUserConfigFromEnv();
   } catch (error) {
     safeWarn("[Presenton] Failed to persist startup user config", error);
   }

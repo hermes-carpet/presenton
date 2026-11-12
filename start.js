@@ -13,7 +13,6 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -21,6 +20,8 @@ import {
 } from "fs";
 import { printPresentonStartupBanner } from "./scripts/presenton-terminal-banner.mjs";
 import userConfigEnv from "./scripts/user-config-env.cjs";
+import exportPermissions from "./scripts/export-permissions.cjs";
+import { runNodeScript as runNodeHelper } from "./scripts/run-node-script.mjs";
 
 const { buildUserConfigFromEnv, readUserConfigEnv } = userConfigEnv;
 
@@ -34,13 +35,13 @@ const nextjsDir = join(__dirname, "servers/nextjs");
 const nextjsStandaloneServer = join(nextjsDir, "server.js");
 const nextjsCli = join(nextjsDir, "node_modules/next/dist/bin/next");
 const exportSyncScript = join(__dirname, "scripts/sync-presentation-export.cjs");
+const documentSyncScript = join(__dirname, "scripts/sync-document-dependencies.cjs");
 const nginxSourceConfigPath = join(__dirname, "nginx.conf");
 const nginxRuntimeConfigPath = "/etc/nginx/nginx.conf";
 
 const args = process.argv.slice(2);
 const hasDevArg = args.includes("--dev") || args.includes("-d");
 const isDev = hasDevArg;
-const canChangeKeys = process.env.CAN_CHANGE_KEYS !== "false";
 
 const fastapiPort = 8000;
 const nextjsPort = 3000;
@@ -86,16 +87,7 @@ const ensureReadableDirectory = (dirPath) => {
 };
 
 const ensureReadableExportFiles = (dirPath) => {
-  for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
-    const entryPath = join(dirPath, entry.name);
-
-    if (entry.isDirectory()) {
-      chmodBestEffort(entryPath, appDataDirectoryMode);
-      ensureReadableExportFiles(entryPath);
-    } else if (entry.isFile()) {
-      chmodBestEffort(entryPath, 0o644);
-    }
-  }
+  exportPermissions.finalizeExportPermissions(dirPath, [appDataDirectory], { recursive: true, legacy: true });
 };
 
 const ensureAppDataDirectories = () => {
@@ -103,10 +95,15 @@ const ensureAppDataDirectories = () => {
   for (const dirPath of appDataStaticDirectories) {
     ensureReadableDirectory(dirPath);
   }
-  ensureReadableExportFiles(join(appDataDirectory, "exports"));
+  for (const name of ["exports", "pptx-to-html", "pptx-to-json"]) {
+    ensureReadableExportFiles(join(appDataDirectory, name));
+  }
 };
 
 ensureAppDataDirectories();
+for (const filename of [userConfigPath, userConfigBackupPath]) {
+  if (existsSync(filename)) chmodBestEffort(filename, 0o600);
+}
 
 const readJsonConfig = (filePath) => {
   try {
@@ -133,7 +130,7 @@ const copyUserConfigBackup = () => {
   try {
     if (readJsonConfig(userConfigPath)) {
       copyFileSync(userConfigPath, userConfigBackupPath);
-      chmodBestEffort(userConfigBackupPath, 0o644);
+      chmodBestEffort(userConfigBackupPath, 0o600);
     }
   } catch (error) {
     console.warn("Failed to update user config backup:", error);
@@ -145,7 +142,7 @@ const writeUserConfig = (config) => {
   copyUserConfigBackup();
 
   const tempPath = `${userConfigPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  const fd = openSync(tempPath, "w");
+  const fd = openSync(tempPath, "wx", 0o600);
   try {
     writeFileSync(fd, JSON.stringify(config), "utf8");
     fsyncSync(fd);
@@ -164,7 +161,7 @@ const writeUserConfig = (config) => {
     throw error;
   }
 
-  chmodBestEffort(userConfigPath, 0o644);
+  chmodBestEffort(userConfigPath, 0o600);
   if (!existsSync(userConfigBackupPath)) {
     copyUserConfigBackup();
   }
@@ -174,24 +171,24 @@ const writeUserConfig = (config) => {
 const setupNodeModules = () => {
   return new Promise((resolve, reject) => {
     console.log("Setting up node_modules for Next.js...");
-    const npmProcess = spawn("npm", ["install"], {
+    const npmProcess = spawn("npm", ["ci"], {
       cwd: nextjsDir,
       stdio: "inherit",
       env: process.env,
     });
 
     npmProcess.on("error", (err) => {
-      console.error("npm install failed:", err);
+      console.error("npm ci failed:", err);
       reject(err);
     });
 
     npmProcess.on("exit", (code) => {
       if (code === 0) {
-        console.log("npm install completed successfully");
+        console.log("npm ci completed successfully");
         resolve();
       } else {
-        console.error(`npm install failed with exit code: ${code}`);
-        reject(new Error(`npm install failed with exit code: ${code}`));
+        console.error(`npm ci failed with exit code: ${code}`);
+        reject(new Error(`npm ci failed with exit code: ${code}`));
       }
     });
   });
@@ -220,39 +217,13 @@ const runCommand = (command, commandArgs, options = {}) => {
 };
 
 const runNodeScript = (scriptPath, scriptArgs) => {
-  return runCommand(process.execPath, [scriptPath, ...scriptArgs], {
+  return runNodeHelper(scriptPath, scriptArgs, {
     cwd: __dirname,
   });
-};
-
-const canLoadSharp = () => {
-  const result = spawnSync(process.execPath, ["-e", "require('sharp')"], {
-    cwd: __dirname,
-    env: process.env,
-    encoding: "utf8",
-  });
-  return result.status === 0;
 };
 
 const ensurePresentationExportNodeDependencies = async () => {
-  if (canLoadSharp()) {
-    return;
-  }
-
-  console.warn(
-    "Sharp native dependency is missing for this container platform. Repairing root node_modules..."
-  );
-  await runCommand(
-    "npm",
-    ["install", "--include=optional", "--omit=dev", "--no-fund", "--no-audit"],
-    { cwd: __dirname }
-  );
-
-  if (!canLoadSharp()) {
-    throw new Error(
-      "Sharp still cannot be loaded after npm install. Recreate Docker volumes with `docker compose down -v` and rebuild the development service."
-    );
-  }
+  await runNodeScript(documentSyncScript, []);
 };
 
 const shouldSuppressStartupLogLine = (line) =>
@@ -882,9 +853,7 @@ const main = async () => {
     await ensurePresentationExportNodeDependencies();
   }
 
-  if (canChangeKeys) {
-    setupUserConfigFromEnv();
-  }
+  setupUserConfigFromEnv();
 
   syncNginxConfigForDev();
 

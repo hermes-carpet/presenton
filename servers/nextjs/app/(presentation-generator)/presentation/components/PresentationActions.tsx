@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   AlignCenter,
   AreaChart,
@@ -14,9 +14,6 @@ import {
   BarChart3,
   Bookmark,
   ChartNoAxesGantt,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ChevronsRight,
   Circle,
   Cloud,
@@ -26,7 +23,6 @@ import {
   Flag,
   Gauge,
   Grid3X3,
-  GripVertical,
   Heart,
   Hexagon,
   Home,
@@ -52,7 +48,6 @@ import {
   Sun,
   Table2,
   Triangle,
-  Type,
   ListMinus,
   Search,
   Sigma,
@@ -91,6 +86,11 @@ import {
   type TemplateV2SurfaceSelectedDetail,
 } from "@/components/slide-editor/events/events";
 import Chat from "./Chat";
+import {
+  PRESENTON_BLANK_SLIDE_PROMPT_EVENT,
+  type BlankSlidePromptEventDetail,
+  type BlankSlidePromptRequest,
+} from "../../_shared/blank-slide-prompt-event";
 import TemplateService from "../../services/api/template";
 import { TemplateV2HtmlSlidePreview } from "../../components/TemplateV2HtmlSlidePreview";
 import { isTemplateFreePresentation } from "../../_shared/blank-slide";
@@ -115,15 +115,14 @@ type ActionId =
   | "blocks"
   | "texts"
   | "charts"
-  | "infographics"
+  | "infograph"
   | "tables"
   | "images"
-  | "elements";
+  | "shapes";
 
 type ActionItem = {
   id: ActionId;
   label: string;
-  icon: LucideIcon;
 };
 
 export type PaletteItem = {
@@ -211,23 +210,25 @@ function presentationActionsUiReducer(
 }
 
 const insertActions: ActionItem[] = [
-  { id: "texts", label: "Texts", icon: Type },
-  { id: "charts", label: "Charts", icon: BarChart3 },
-  { id: "infographics", label: "Infographics", icon: Shapes },
-  { id: "tables", label: "Tables", icon: Rows3 },
-  { id: "images", label: "Images", icon: Image },
-  { id: "elements", label: "Elements", icon: Shapes },
+  { id: "ai", label: "AI", },
+  { id: "blocks", label: "Blocks", },
+  { id: "texts", label: "Texts", },
+  { id: "charts", label: "Charts", },
+  { id: "infograph", label: "Infograph",  },
+  { id: "tables", label: "Tables",  },
+  { id: "images", label: "Images", },
+  { id: "shapes", label: "Shapes", },
 ];
 
 const actionIconSrc: Record<ActionId, string> = {
   ai: "/figma/presentation-actions/ai.svg",
   blocks: "/figma/presentation-actions/blocks.svg",
-  texts: "/figma/presentation-actions/texts.svg",
   charts: "/figma/presentation-actions/charts.svg",
-  infographics: "/figma/presentation-actions/infographics.svg",
-  tables: "/figma/presentation-actions/tables.svg",
+  infograph: "/figma/presentation-actions/infographics.svg",
+  shapes: "/figma/presentation-actions/shapes.svg",
   images: "/figma/presentation-actions/images.svg",
-  elements: "/figma/presentation-actions/elements.svg",
+  texts: "/figma/presentation-actions/texts.svg",
+  tables: "/figma/presentation-actions/tables.svg",
 };
 
 export const textItems = [
@@ -244,6 +245,46 @@ export const textItems = [
   { id: "quote", label: "Quote", icon: Quote },
   { id: "body-text", label: "Body Text", icon: Columns2 },
 ] satisfies PaletteItem[];
+
+const textStyleOptions = [
+  {
+    itemId: "title-block",
+    label: "Add a heading",
+    textClassName: "text-[clamp(23px,2vw,28px)] leading-none",
+  },
+  {
+    itemId: "subtitle",
+    label: "Add a subheading",
+    textClassName: "text-[clamp(17px,1.45vw,20px)] leading-6",
+  },
+  {
+    itemId: "body-text",
+    label: "Add a body text",
+    textClassName: "text-[clamp(13px,1.05vw,15px)] leading-5",
+  },
+  {
+    itemId: "bullet-list",
+    label: "Add a bullet point",
+    textClassName: "text-[clamp(13px,1.05vw,15px)] leading-5",
+    bullet: true,
+  },
+] as const;
+
+const textCompositionItemIds = [
+  "equation",
+  "equation-quadratic",
+  "equation-summation",
+  "quote",
+  "equation-integral",
+  "equation-matrix",
+  "numbered-list",
+  "list-item",
+] as const;
+
+const textCompositionItems = textCompositionItemIds.flatMap((itemId) => {
+  const item = textItems.find((candidate) => candidate.id === itemId);
+  return item ? [item] : [];
+});
 
 export const chartTypeItems = [
   { id: "bar", label: "Bar Chart", icon: BarChart3 },
@@ -295,13 +336,43 @@ export const infographicItems = [
 
 export const tableTypeItems = [
   { id: "simple-table", label: "Simple Table", icon: Table2 },
+  { id: "comparison-table", label: "Comparison Table", icon: Columns2 },
+  { id: "project-table", label: "Project Tracker", icon: Rows3 },
+  { id: "metrics-table", label: "Metrics Table", icon: Table2 },
 ] satisfies PaletteItem[];
 
 export const imageItems = [
-  { id: "image", label: "Image", icon: Image },
-  { id: "image-text", label: "Image + Text", icon: Columns2 },
+  { id: "image-frame-square", label: "Square Frame", icon: Image },
+  { id: "image-frame-rounded", label: "Rounded Frame", icon: Image },
+  { id: "image-frame-circle", label: "Circle Frame", icon: Circle },
+  { id: "image-frame-pentagon", label: "Pentagon Frame", icon: Pentagon },
+  { id: "image-frame-polaroid", label: "Polaroid Frame", icon: Image },
+  { id: "image-frame-torn", label: "Torn Paper Frame", icon: Image },
+  { id: "image-filmstrip", label: "Film Strip", icon: Image },
+  { id: "image-petal-grid", label: "Petal Collage", icon: Grid3X3 },
+  { id: "image-frame-clover", label: "Clover Frame", icon: Image },
+  { id: "image-circle-triptych", label: "Circle Triptych", icon: Circle },
+  { id: "image-starburst", label: "Starburst Frame", icon: Star },
+  { id: "image-triple-strip", label: "Three Image Strip", icon: Columns2 },
+  { id: "image-frame-stamp", label: "Postage Frame", icon: Image },
+  { id: "image-frame-torn-bottom", label: "Torn Bottom Frame", icon: Image },
+  { id: "image-collage", label: "Image Collage", icon: Grid3X3 },
+  { id: "image-vertical-stack", label: "Vertical Stack", icon: Rows3 },
+  { id: "image", label: "Full Image", icon: Image },
   { id: "image-grid", label: "Image Grid", icon: Grid3X3 },
+  { id: "image-split", label: "Two Images", icon: Columns2 },
+  { id: "image-frame-ornate", label: "Corner Frame", icon: Image },
+  { id: "image-text", label: "Image + Text", icon: Columns2 },
+  { id: "image-caption", label: "Image + Caption", icon: Image },
 ] satisfies PaletteItem[];
+
+const compactImageCardClassNames: Record<string, string> = {
+  "image-filmstrip": "col-span-2",
+  "image-triple-strip": "col-span-2",
+};
+
+const compactImageItems = imageItems.slice(0, 14);
+const compositionImageItems = imageItems.slice(14);
 
 const elementIconById: Record<ElementInsertKind, LucideIcon> = {
   "vector-rectangle": RectangleHorizontal,
@@ -364,32 +435,35 @@ export const elementItemGroups = ELEMENT_INSERT_GROUPS.map((group) => ({
 export const elementItems = elementItemGroups.flatMap((group) => group.items);
 
 const templateBlocksCache = new Map<string, TemplateBlockGroup[]>();
-const BLOCK_PREVIEW_WIDTH = 1280;
-const BLOCK_PREVIEW_HEIGHT = 720;
+const BLOCK_PREVIEW_PADDING = { x: 0.04, y: 0.04 };
 
 const NavButton = ({
   item,
   active,
+  disabled = false,
   onClick,
 }: {
   item: ActionItem;
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) => {
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        "group flex w-full flex-col items-center justify-center text-[12px] font-normal leading-normal transition-colors",
+        "group flex w-full flex-col items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#7A5AF8]/40 text-[12px] font-normal leading-normal transition-colors",
         item.id === "images" ? "h-[52px] gap-2" : "h-12 gap-1",
         active ? "text-[#7A5AF8]" : "text-black",
+        disabled && "cursor-not-allowed opacity-40",
       )}
       aria-pressed={active}
     >
       <span
         className={cn(
-          "flex h-[30px] w-[30px] items-center justify-center rounded-[10px] border border-transparent transition-all",
+          "flex h-[30px] w-[30px] items-center justify-center rounded-[8px] border border-transparent transition-all",
           active && "border-[#EDEEEF] bg-white",
         )}
         style={{
@@ -412,6 +486,26 @@ const SectionLabel = ({ children }: { children: React.ReactNode }) => (
   <h4 className="mb-2 text-[10px] font-normal uppercase leading-[15px] tracking-[0.367px] text-[#99A1AF]">
     {children}
   </h4>
+);
+
+const FilledAccordionArrow = ({
+  className,
+  expanded,
+}: {
+  className?: string;
+  expanded: boolean;
+}) => (
+  <svg
+    aria-hidden="true"
+    className={cn(
+      "h-3 w-3 shrink-0 transition-transform duration-200 motion-reduce:transition-none",
+      !expanded && "-rotate-90",
+      className,
+    )}
+    viewBox="0 0 12 12"
+  >
+    <path d="M1.75 3.5h8.5L6 8.5 1.75 3.5Z" fill="currentColor" />
+  </svg>
 );
 
 const PaletteCard = ({
@@ -514,8 +608,618 @@ export const InsertPanel = ({
   </div>
 );
 
+function TextsPanel({
+  disabled = false,
+  onItemSelect,
+  theme,
+}: {
+  disabled?: boolean;
+  onItemSelect?: (item: PaletteItem) => void;
+  theme: TemplateTheme;
+}) {
+  const [compositionsExpanded, setCompositionsExpanded] = useState(true);
+
+  return (
+    <div className="h-full overflow-y-auto bg-white hide-scrollbar">
+      <div className="px-[clamp(14px,1.4vw,20px)] pb-3 pt-[clamp(22px,2vw,28px)]">
+        <h3 className="mb-5 text-[15px] font-medium leading-5 text-[#191919]">
+          Text Styles
+        </h3>
+
+        <div className="space-y-2">
+          {textStyleOptions.map((option) => {
+            const item = textItems.find(
+              (candidate) => candidate.id === option.itemId,
+            );
+            if (!item) return null;
+
+            return (
+              <button
+                key={option.itemId}
+                type="button"
+                disabled={disabled}
+                onClick={
+                  onItemSelect && !disabled
+                    ? () => onItemSelect(item)
+                    : undefined
+                }
+                className={cn(
+                  "group flex min-h-[52px] w-full items-center rounded-[13px] border border-[#E4E4E7] bg-white px-[clamp(14px,1.3vw,18px)] text-left font-normal text-[#18181B] transition-[border-color,background-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[#B9A8FA] hover:bg-[#FCFBFF] hover:shadow-[0_6px_16px_rgba(67,56,202,0.07)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40",
+                  option.textClassName,
+                  disabled &&
+                    "cursor-not-allowed opacity-50 hover:translate-y-0 hover:border-[#E4E4E7] hover:bg-white hover:shadow-none",
+                )}
+                aria-label={option.label}
+              >
+                {"bullet" in option && option.bullet ? (
+                  <span
+                    className="mr-3 text-[18px] leading-none"
+                    aria-hidden="true"
+                  >
+                    •
+                  </span>
+                ) : null}
+                <span>{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <section>
+        <div className="sticky top-0 z-10 bg-white/95 px-[clamp(14px,1.4vw,20px)] backdrop-blur-sm">
+          <button
+            type="button"
+            onClick={() => setCompositionsExpanded((expanded) => !expanded)}
+            className="flex min-h-[52px] w-full items-center gap-2 border-b border-transparent py-3 text-left transition-colors hover:text-[#6938EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#7A5AF8]/40"
+            aria-expanded={compositionsExpanded}
+            aria-controls="text-compositions"
+          >
+            <FilledAccordionArrow
+              expanded={compositionsExpanded}
+              className="text-[#A1A1AA]"
+            />
+            <span className="text-[15px] font-medium leading-5 text-[#27272A]">
+              Compositions
+            </span>
+            <span className="ml-auto text-[11px] font-normal tabular-nums text-[#A1A1AA]">
+              {textCompositionItems.length} Options
+            </span>
+          </button>
+        </div>
+
+        <div
+          id="text-compositions"
+          inert={!compositionsExpanded}
+          className={cn(
+            "grid motion-reduce:transition-none transition-[grid-template-rows,opacity] duration-200 ease-out",
+            compositionsExpanded
+              ? "grid-rows-[1fr] opacity-100"
+              : "grid-rows-[0fr] opacity-0",
+          )}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-5 px-[clamp(14px,1.4vw,20px)] pb-[clamp(24px,2.2vw,32px)] pt-1">
+              {textCompositionItems.map((item) => (
+                <button
+                  key={item.id ?? item.label}
+                  type="button"
+                  disabled={disabled}
+                  onClick={
+                    onItemSelect && !disabled
+                      ? () => onItemSelect(item)
+                      : undefined
+                  }
+                  className={cn(
+                    "group min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40 focus-visible:ring-offset-2",
+                    disabled && "cursor-not-allowed opacity-50",
+                  )}
+                  aria-label={`Add ${item.label}`}
+                >
+                  <span className="block aspect-[4/3] w-full overflow-hidden bg-[#F6F6F9] transition-[box-shadow,transform] duration-150 group-hover:-translate-y-0.5 group-hover:shadow-[0_8px_20px_rgba(67,56,202,0.10)]">
+                    <InsertPalettePreview
+                      itemId={item.id}
+                      kind="text"
+                      theme={theme}
+                    />
+                  </span>
+                  <span className="mt-2 block truncate text-[14px] font-normal leading-5 text-[#27272A]">
+                    {item.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ChartsPanel({
+  disabled = false,
+  onItemSelect,
+  theme,
+}: {
+  disabled?: boolean;
+  onItemSelect?: (item: PaletteItem) => void;
+  theme: TemplateTheme;
+}) {
+  const [query, setQuery] = useState("");
+  const visibleItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return chartTypeItems;
+
+    return chartTypeItems.filter((item) =>
+      item.label.toLowerCase().includes(normalizedQuery),
+    );
+  }, [query]);
+
+  return (
+    <div className="h-full overflow-y-auto bg-white hide-scrollbar">
+      <div className="sticky top-0 z-20 border-b border-[#F4F4F5] bg-white/95 px-[clamp(14px,1.4vw,20px)] pb-4 pt-5 backdrop-blur-sm">
+        <label className="relative block">
+          <span className="sr-only">Search charts</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search Charts..."
+            className="h-11 w-full appearance-none border-0 border-b border-[#E4E4E7] bg-transparent px-0 pr-8 text-[15px] font-normal text-[#191919] outline-none transition-colors placeholder:text-[#A1A1AA] focus:border-[#7A5AF8] [&::-webkit-search-cancel-button]:hidden"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-0 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-[#A1A1AA] transition-colors hover:bg-[#F0EEFF] hover:text-[#6938EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+              aria-label="Clear chart search"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
+        </label>
+
+        <div className="mt-7 flex items-end justify-between gap-3">
+          <h3 className="text-[17px] font-medium leading-6 text-[#191919]">
+            Charts
+          </h3>
+          <span className="text-[11px] tabular-nums text-[#A1A1AA]">
+            {visibleItems.length}
+          </span>
+        </div>
+      </div>
+
+      <div className="px-[clamp(14px,1.4vw,20px)] pb-[clamp(24px,2.2vw,32px)] pt-5">
+        {visibleItems.length > 0 ? (
+          <div className="grid grid-cols-2 gap-x-3 gap-y-5">
+            {visibleItems.map((item) => (
+              <button
+                key={item.id ?? item.label}
+                type="button"
+                disabled={disabled}
+                onClick={
+                  onItemSelect && !disabled
+                    ? () => onItemSelect(item)
+                    : undefined
+                }
+                className={cn(
+                  "group min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40 focus-visible:ring-offset-2",
+                  disabled && "cursor-not-allowed opacity-50",
+                )}
+                aria-label={`Add ${item.label}`}
+              >
+                <span className="block aspect-video w-full overflow-hidden bg-[#F7F7FA] transition-[box-shadow,transform] duration-150 group-hover:-translate-y-0.5 group-hover:shadow-[0_8px_20px_rgba(67,56,202,0.10)]">
+                  <InsertPalettePreview
+                    itemId={item.id}
+                    kind="chart"
+                    theme={theme}
+                  />
+                </span>
+                <span className="mt-2 block truncate text-[14px] font-normal leading-5 text-[#27272A]">
+                  {item.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-[10px] border border-dashed border-[#D4D4D8] bg-[#FAFAFA] px-4 py-8 text-center">
+            <Search
+              className="mx-auto h-5 w-5 text-[#A1A1AA]"
+              strokeWidth={1.7}
+              aria-hidden
+            />
+            <p className="mt-2 text-[12px] font-medium text-[#52525B]">
+              No matching charts
+            </p>
+            <p className="mt-1 text-[11px] leading-4 text-[#A1A1AA]">
+              Try a different name or keyword.
+            </p>
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="mt-3 rounded-[7px] bg-[#F0EEFF] px-3 py-1.5 text-[11px] font-medium text-[#6938EF] transition-colors hover:bg-[#E4E0FF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+            >
+              Clear search
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImagesPanel({
+  disabled = false,
+  onItemSelect,
+  theme,
+}: {
+  disabled?: boolean;
+  onItemSelect?: (item: PaletteItem) => void;
+  theme: TemplateTheme;
+}) {
+  return (
+    <div className="h-full overflow-y-auto bg-white hide-scrollbar">
+      <div className="sticky top-0 z-20 bg-white/95 px-4 pb-[10px] pt-8 backdrop-blur-sm">
+        <h3 className="font-['Syne'] text-[14px] font-normal leading-normal text-[#191919]">
+          Images
+        </h3>
+      </div>
+
+      <div className="space-y-[18px] px-4 pb-8 pt-[10px]">
+        {[
+          {
+            items: compactImageItems,
+            gridClassName:
+              "auto-rows-[60px] grid-cols-[repeat(4,60px)] gap-[9px]",
+            cardClassName: (item: PaletteItem) =>
+              (item.id && compactImageCardClassNames[item.id]) ?? "",
+          },
+          {
+            items: compositionImageItems,
+            gridClassName:
+              "auto-rows-[96px] grid-cols-[repeat(2,129px)] gap-[9px]",
+            cardClassName: () => "",
+          },
+        ].map((group, groupIndex) => (
+          <div
+            key={groupIndex}
+            className={cn("grid grid-flow-row", group.gridClassName)}
+          >
+            {group.items.map((item) => (
+              <button
+                key={item.id ?? item.label}
+                type="button"
+                disabled={disabled}
+                onClick={
+                  onItemSelect && !disabled
+                    ? () => onItemSelect(item)
+                    : undefined
+                }
+                className={cn(
+                  "group h-full w-full min-w-0 rounded-[9px] text-left focus-visible:outline-none",
+                  group.cardClassName(item),
+                  disabled && "cursor-not-allowed opacity-50",
+                )}
+                aria-label={`Add ${item.label}`}
+                title={item.label}
+              >
+                <span className="block h-full w-full overflow-hidden rounded-[inherit] bg-[#F6F6F9] ring-1 ring-inset ring-transparent transition-[box-shadow,transform] duration-150 group-hover:-translate-y-0.5 group-hover:shadow-[0_7px_18px_rgba(39,39,42,0.12)] group-hover:ring-[#D8D0FF] group-focus-visible:ring-2 group-focus-visible:ring-inset group-focus-visible:ring-[#7A5AF8]/40">
+                  <InsertPalettePreview
+                    itemId={item.id}
+                    kind="image"
+                    theme={theme}
+                  />
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ShapesPanel({
+  disabled = false,
+  onItemSelect,
+  theme,
+}: {
+  disabled?: boolean;
+  onItemSelect?: (item: PaletteItem) => void;
+  theme: TemplateTheme;
+}) {
+  const [query, setQuery] = useState("");
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    () =>
+      Object.fromEntries(elementItemGroups.map((group) => [group.label, true])),
+  );
+  const visibleGroups = useMemo<
+    Array<{ label: string; items: PaletteItem[] }>
+  >(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return elementItemGroups;
+
+    return elementItemGroups.flatMap((group) => {
+      const groupMatches = group.label.toLowerCase().includes(normalizedQuery);
+      const items = groupMatches
+        ? group.items
+        : group.items.filter((item) =>
+            item.label.toLowerCase().includes(normalizedQuery),
+          );
+
+      return items.length > 0 ? [{ ...group, items }] : [];
+    });
+  }, [query]);
+  const hasSearchResults = visibleGroups.some((group) => group.items.length > 0);
+
+  return (
+    <div className="h-full overflow-y-auto bg-white hide-scrollbar">
+      <div className="sticky top-0 z-30 border-b border-[#F4F4F5] bg-white/95 px-[clamp(14px,1.4vw,20px)] pb-4 pt-5 backdrop-blur-sm">
+        <label className="relative block">
+          <span className="sr-only">Search elements</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search Elements..."
+            className="h-11 w-full appearance-none border-0 border-b border-[#E4E4E7] bg-transparent px-0 pr-8 text-[15px] font-normal text-[#191919] outline-none transition-colors placeholder:text-[#A1A1AA] focus:border-[#7A5AF8] [&::-webkit-search-cancel-button]:hidden"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-0 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-[#A1A1AA] transition-colors hover:bg-[#F0EEFF] hover:text-[#6938EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+              aria-label="Clear element search"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
+        </label>
+
+        <h3 className="mt-7 text-[17px] font-medium leading-6 text-[#191919]">
+          Shapes
+        </h3>
+      </div>
+
+      {hasSearchResults ? (
+        <div className="pb-[clamp(24px,2.2vw,32px)] pt-2">
+          {visibleGroups.map((group) => {
+            const expanded = query ? true : expandedGroups[group.label] !== false;
+            const groupId = `shape-group-${group.label
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")}`;
+
+            return (
+              <section key={group.label}>
+                <div className="sticky top-[128px] z-20 bg-white/95 px-[clamp(14px,1.4vw,20px)] backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedGroups((current) => ({
+                        ...current,
+                        [group.label]: !expanded,
+                      }))
+                    }
+                    className="flex min-h-[46px] w-full items-center gap-2 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#7A5AF8]/40"
+                    aria-expanded={expanded}
+                    aria-controls={groupId}
+                  >
+                    <FilledAccordionArrow
+                      expanded={expanded}
+                      className="text-[#3F3F46]"
+                    />
+                    <span className="text-[16px] font-normal leading-6 text-[#27272A]">
+                      {group.label}
+                    </span>
+                  </button>
+                </div>
+
+                <div
+                  id={groupId}
+                  inert={!expanded}
+                  className={cn(
+                    "grid motion-reduce:transition-none transition-[grid-template-rows,opacity] duration-200 ease-out",
+                    expanded
+                      ? "grid-rows-[1fr] opacity-100"
+                      : "grid-rows-[0fr] opacity-0",
+                  )}
+                >
+                  <div className="min-h-0 overflow-hidden">
+                    <div className="grid grid-cols-5 gap-x-2 gap-y-3 px-[clamp(14px,1.4vw,20px)] pb-3 pt-1">
+                      {group.items.map((item) => (
+                        <button
+                          key={item.id ?? item.label}
+                          type="button"
+                          disabled={disabled}
+                          onClick={
+                            onItemSelect && !disabled
+                              ? () => onItemSelect(item)
+                              : undefined
+                          }
+                          className={cn(
+                            "group min-w-0 rounded-[8px] text-left focus-visible:outline-none",
+                            disabled &&
+                              "cursor-not-allowed opacity-50",
+                          )}
+                          aria-label={`Add ${item.label}`}
+                          title={item.label}
+                        >
+                          <span className="block aspect-video w-full overflow-hidden rounded-[inherit] transition-shadow group-hover:ring-1 group-hover:ring-inset group-hover:ring-[#D9D0FF] group-focus-visible:ring-2 group-focus-visible:ring-inset group-focus-visible:ring-[#7A5AF8]/40">
+                            <InsertPalettePreview
+                              itemId={item.id}
+                              kind="element"
+                              theme={theme}
+                            />
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="mx-[clamp(14px,1.4vw,20px)] mt-5 rounded-[10px] border border-dashed border-[#D4D4D8] bg-[#FAFAFA] px-4 py-8 text-center">
+          <Search
+            className="mx-auto h-5 w-5 text-[#A1A1AA]"
+            strokeWidth={1.7}
+            aria-hidden
+          />
+          <p className="mt-2 text-[12px] font-medium text-[#52525B]">
+            No matching shapes
+          </p>
+          <p className="mt-1 text-[11px] leading-4 text-[#A1A1AA]">
+            Try a different name or category.
+          </p>
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="mt-3 rounded-[7px] bg-[#F0EEFF] px-3 py-1.5 text-[11px] font-medium text-[#6938EF] transition-colors hover:bg-[#E4E0FF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+          >
+            Clear search
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InfographicsPanel({
+  disabled = false,
+  onItemSelect,
+  theme,
+}: {
+  disabled?: boolean;
+  onItemSelect?: (item: PaletteItem) => void;
+  theme: TemplateTheme;
+}) {
+  const [query, setQuery] = useState("");
+  const visibleItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return infographicItems;
+
+    return infographicItems.filter((item) =>
+      item.label.toLowerCase().includes(normalizedQuery),
+    );
+  }, [query]);
+
+  return (
+    <div className="h-full overflow-y-auto bg-white hide-scrollbar">
+      <div className="sticky top-0 z-20 border-b border-[#F4F4F5] bg-white/95 px-[clamp(14px,1.4vw,20px)] pb-4 pt-5 backdrop-blur-sm">
+        <label className="relative block">
+          <span className="sr-only">Search infographics</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search Infographics..."
+            className="h-11 w-full appearance-none border-0 border-b border-[#E4E4E7] bg-transparent px-0 pr-8 text-[15px] font-normal text-[#191919] outline-none transition-colors placeholder:text-[#A1A1AA] focus:border-[#7A5AF8] [&::-webkit-search-cancel-button]:hidden"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-0 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-[#A1A1AA] transition-colors hover:bg-[#F0EEFF] hover:text-[#6938EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+              aria-label="Clear infographic search"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
+        </label>
+
+        <div className="mt-7 flex items-end justify-between gap-3">
+          <h3 className="text-[17px] font-medium leading-6 text-[#191919]">
+            Infographics
+          </h3>
+          <span className="text-[11px] tabular-nums text-[#A1A1AA]">
+            {visibleItems.length}
+          </span>
+        </div>
+      </div>
+
+      <div className="px-[clamp(14px,1.4vw,20px)] pb-[clamp(24px,2.2vw,32px)] pt-5">
+        {visibleItems.length > 0 ? (
+          <div className="grid grid-cols-2 gap-x-3 gap-y-5">
+            {visibleItems.map((item) => (
+              <button
+                key={item.id ?? item.label}
+                type="button"
+                disabled={disabled}
+                onClick={
+                  onItemSelect && !disabled
+                    ? () => onItemSelect(item)
+                    : undefined
+                }
+                className={cn(
+                  "group min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40 focus-visible:ring-offset-2",
+                  disabled && "cursor-not-allowed opacity-50",
+                )}
+                aria-label={`Add ${item.label}`}
+              >
+                <span className="block aspect-video w-full overflow-hidden bg-[#F7F7FA] transition-[box-shadow,transform] duration-150 group-hover:-translate-y-0.5 group-hover:shadow-[0_8px_20px_rgba(67,56,202,0.10)]">
+                  <InsertPalettePreview
+                    itemId={item.id}
+                    kind="infographic"
+                    theme={theme}
+                  />
+                </span>
+                <span className="mt-2 block truncate text-[14px] font-normal leading-5 text-[#27272A]">
+                  {item.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-[10px] border border-dashed border-[#D4D4D8] bg-[#FAFAFA] px-4 py-8 text-center">
+            <Search
+              className="mx-auto h-5 w-5 text-[#A1A1AA]"
+              strokeWidth={1.7}
+              aria-hidden
+            />
+            <p className="mt-2 text-[12px] font-medium text-[#52525B]">
+              No matching infographics
+            </p>
+            <p className="mt-1 text-[11px] leading-4 text-[#A1A1AA]">
+              Try a different name or keyword.
+            </p>
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="mt-3 rounded-[7px] bg-[#F0EEFF] px-3 py-1.5 text-[11px] font-medium text-[#6938EF] transition-colors hover:bg-[#E4E0FF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+            >
+              Clear search
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExplicitThemeBackground(value: unknown) {
+  const presentation = isRecord(value) ? value : null;
+  const data = isRecord(presentation?.data) ? presentation.data : null;
+  const theme = isRecord(presentation?.theme)
+    ? presentation.theme
+    : isRecord(data?.theme)
+      ? data.theme
+      : null;
+  const colors = isRecord(theme?.colors)
+    ? theme.colors
+    : isRecord(presentation?.colors)
+      ? presentation.colors
+      : isRecord(data?.colors)
+        ? data.colors
+        : theme;
+  const background = colors?.background;
+
+  return typeof background === "string" && background.trim().length > 0;
 }
 
 function readString(value: unknown): string | null {
@@ -795,46 +1499,6 @@ function templateBlocksCacheKey(
   return `${presentationId}:${candidateIds}:${layoutIds}`;
 }
 
-function useBlockPreviewScale() {
-  const previewRef = useRef<HTMLDivElement | null>(null);
-  const [previewWidth, setPreviewWidth] = useState(0);
-
-  useEffect(() => {
-    const node = previewRef.current;
-    if (!node) return;
-
-    const updateWidth = (width = node.getBoundingClientRect().width) => {
-      setPreviewWidth((current) =>
-        Math.abs(current - width) < 0.5 ? current : width,
-      );
-    };
-
-    updateWidth();
-
-    if (typeof ResizeObserver === "undefined") {
-      const handleResize = () => updateWidth();
-      window.addEventListener("resize", handleResize);
-      return () => {
-        window.removeEventListener("resize", handleResize);
-      };
-    }
-
-    const observer = new ResizeObserver((entries) => {
-      updateWidth(entries[0]?.contentRect.width);
-    });
-    observer.observe(node);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
-
-  return {
-    previewRef,
-    scale: previewWidth > 0 ? previewWidth / BLOCK_PREVIEW_WIDTH : 0,
-  };
-}
-
 function blockPreviewLayout(block: TemplateBlock): TemplateV2Layout {
   return {
     id: `block-preview-${block.key}`,
@@ -842,42 +1506,63 @@ function blockPreviewLayout(block: TemplateBlock): TemplateV2Layout {
   };
 }
 
+function blockPreviewBounds(block: TemplateBlock) {
+  const element = adaptTemplateV2ComponentToElement(block.raw, block.index);
+  const position = element?.position;
+  const size = element?.size;
+
+  if (
+    !position ||
+    !size ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y) ||
+    !Number.isFinite(size.width) ||
+    !Number.isFinite(size.height) ||
+    size.width <= 0 ||
+    size.height <= 0
+  ) {
+    return undefined;
+  }
+
+  // Template flow containers can be narrower than their rendered children
+  // (for example, pagination labels whose text widths exceed the flex box).
+  // Give small components proportionally more breathing room while capping
+  // the expansion so large blocks still fill their preview cards.
+  const horizontalSafety = Math.min(
+    36,
+    Math.max(12, size.width * 0.06),
+  );
+  const verticalSafety = Math.min(
+    24,
+    Math.max(6, size.height * 0.08),
+  );
+
+  return {
+    left: position.x - horizontalSafety,
+    top: position.y - verticalSafety,
+    right: position.x + size.width + horizontalSafety,
+    bottom: position.y + size.height + verticalSafety,
+  };
+}
+
 function BlockThumbnail({ block }: { block: TemplateBlock }) {
-  const { previewRef, scale } = useBlockPreviewScale();
   const layout = useMemo(() => blockPreviewLayout(block), [block]);
+  const bounds = useMemo(() => blockPreviewBounds(block), [block]);
 
   return (
     <div
-      ref={previewRef}
-      className="template-block-preview relative aspect-video w-full overflow-hidden rounded-[6px] bg-white transition-colors"
+      className="template-block-preview relative aspect-video w-full overflow-hidden rounded-[6px] bg-[#F7F7FA] transition-colors duration-150 group-hover:bg-[#27272A] group-focus-visible:bg-[#27272A]"
     >
-      <div
-        className={cn(
-          "pointer-events-none absolute left-0 top-0 origin-top-left",
-          scale > 0 ? "opacity-100" : "opacity-0",
-        )}
-        style={{
-          width: BLOCK_PREVIEW_WIDTH,
-          height: BLOCK_PREVIEW_HEIGHT,
-          transform: `scale(${scale || 1})`,
+      <TemplateV2HtmlSlidePreview
+        slide={{
+          ui: layout,
         }}
-      >
-        {/* <TemplateV2KonvaSlide
-          layout={layout}
-          isEditMode={false}
-          slideId={null}
-          slideIndex={block.index}
-        /> */}
-        <TemplateV2HtmlSlidePreview
-          slide={{
-            ui: layout,
-          }}
-          fonts={null}
-          className="template-block-preview-surface pointer-events-none rounded-[10px]"
-          contentClassName="template-block-preview-content"
-        />
-
-      </div>
+        fonts={null}
+        fitBounds={bounds}
+        fitPadding={BLOCK_PREVIEW_PADDING}
+        className="template-block-preview-surface pointer-events-none h-full rounded-[inherit] transition-colors duration-150 group-hover:bg-[#27272A] group-focus-visible:bg-[#27272A]"
+        contentClassName="template-block-preview-content rounded-[inherit] transition-colors duration-150 group-hover:bg-[#27272A] group-focus-visible:bg-[#27272A] group-hover:[&_[data-template-v2-html-slide]]:!bg-[#27272A] group-focus-visible:[&_[data-template-v2-html-slide]]:!bg-[#27272A]"
+      />
     </div>
   );
 }
@@ -897,18 +1582,19 @@ function BlockVariantButton({
       data-block-variant
       disabled={disabled}
       className={cn(
-        "template-block-variant group relative w-full overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-[#F9FAFB] p-2 text-left transition hover:border-[#D6BBFB] hover:bg-[#FAF9FF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40",
-        disabled && "cursor-not-allowed opacity-50 hover:border-[#E5E7EB] hover:bg-[#F9FAFB]",
+        "template-block-variant group relative w-full overflow-hidden rounded-[8px] border border-transparent bg-[#F7F7FA] p-0 text-left transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-[#B9A8FA] hover:shadow-[0_8px_20px_rgba(67,56,202,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40",
+        disabled && "cursor-not-allowed opacity-50 hover:translate-y-0 hover:border-transparent hover:shadow-none",
       )}
       onClick={() => {
         if (!disabled) onInsertBlock(block);
       }}
       aria-label={`Insert ${block.title}`}
+      title={`Add ${block.title}`}
     >
       <div className="relative">
         <BlockThumbnail block={block} />
-        <span className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#111827] shadow-[0_4px_12px_rgba(16,24,40,0.16)]">
-          <GripVertical className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+        <span className="absolute right-1.5 top-1.5 flex h-7 w-7 scale-90 items-center justify-center rounded-full border border-[#E4E1FE] bg-white text-[#6938EF] opacity-0 shadow-[0_6px_16px_rgba(16,24,40,0.18)] transition-[opacity,transform] duration-150 group-hover:scale-100 group-hover:opacity-100 group-focus-visible:scale-100 group-focus-visible:opacity-100">
+          <Plus className="h-3.5 w-3.5" strokeWidth={2.2} aria-hidden />
         </span>
       </div>
     </button>
@@ -916,83 +1602,74 @@ function BlockVariantButton({
 }
 
 function BlockGroupCard({
+  defaultExpanded = false,
   disabled = false,
   group,
   onInsertBlock,
+  searchActive = false,
 }: {
+  defaultExpanded?: boolean;
   disabled?: boolean;
   group: TemplateBlockGroup;
   onInsertBlock: (block: TemplateBlock) => void;
+  searchActive?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [hasExpanded, setHasExpanded] = useState(false);
-  const firstVariant = group.variants[0];
-  const additionalVariants = group.variants.slice(1);
+  const [expanded, setExpanded] = useState(defaultExpanded || searchActive);
+  const [hasOpened, setHasOpened] = useState(defaultExpanded || searchActive);
   const variantCount = group.variants.length;
-
-  const toggleExpanded = () => {
-    if (!expanded) setHasExpanded(true);
-    setExpanded((current) => !current);
-  };
+  const contentId = `block-group-${group.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const groupTitle = group.title.replace(/^blocks?\s*[/:–—-]\s*/i, "");
 
   return (
-    <section className="rounded-[14px] border border-[#E5E7EB] bg-white p-3 transition-shadow hover:shadow-[0_8px_24px_rgba(16,24,40,0.08)]">
-      <h4 className="mb-4 truncate text-center text-[clamp(14px,1vw,16px)] font-medium leading-5 text-[#171717]">
-        {group.title}
-      </h4>
-
-      {firstVariant ? (
-        <BlockVariantButton
-          block={firstVariant}
-          disabled={disabled}
-          onInsertBlock={onInsertBlock}
+    <section className="border-b border-[#F0F1F3] last:border-b-0">
+      <button
+        type="button"
+        className="group sticky top-[117px] z-10 -mx-1 flex w-[calc(100%+8px)] items-center gap-2 border-b border-transparent bg-white/95 px-1 py-3 text-left backdrop-blur-sm transition-[border-color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#7A5AF8]/40"
+        aria-controls={contentId}
+        aria-expanded={expanded}
+        onClick={() => {
+          if (!expanded) setHasOpened(true);
+          setExpanded((current) => !current);
+        }}
+      >
+        <FilledAccordionArrow
+          expanded={expanded}
+          className="text-[#8B8B94] group-hover:text-[#5141E5]"
         />
-      ) : null}
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5 text-[#191919]">
+          <span className="font-normal text-[#A1A1AA]">Blocks/ </span>
+          {groupTitle || group.title}
+        </span>
+        <span className="shrink-0 text-[11px] font-normal tabular-nums text-[#A1A1AA]">
+          {variantCount} {variantCount === 1 ? "Layout" : "Layouts"}
+        </span>
+      </button>
 
       <div
+        id={contentId}
+        inert={!expanded}
         className={cn(
-          "grid transition-[grid-template-rows,opacity] duration-300 ease-out",
+          "grid motion-reduce:transition-none transition-[grid-template-rows,opacity] duration-300 ease-out",
           expanded
             ? "grid-rows-[1fr] opacity-100"
             : "grid-rows-[0fr] opacity-0",
         )}
       >
         <div className="min-h-0 overflow-hidden">
-          <div className="space-y-3 pt-3">
-            {hasExpanded
-              ? additionalVariants.map((block) => (
-                <BlockVariantButton
-                  key={block.key}
-                  block={block}
-                  disabled={disabled}
-                  onInsertBlock={onInsertBlock}
-                />
-              ))
+          <div className="grid grid-cols-2 gap-2 pb-4 pt-1">
+            {hasOpened
+              ? group.variants.map((block) => (
+                  <BlockVariantButton
+                    key={block.key}
+                    block={block}
+                    disabled={disabled}
+                    onInsertBlock={onInsertBlock}
+                  />
+                ))
               : null}
           </div>
         </div>
       </div>
-
-      {variantCount > 1 ? (
-        <button
-          type="button"
-          className="mt-3 flex w-full items-center justify-between gap-3 border-t border-[#E5E7EB] pt-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
-          aria-expanded={expanded}
-          onClick={toggleExpanded}
-        >
-          <span className="shrink-0 rounded-full border border-[#D6BBFB] bg-[#FAF8FF] px-3 py-1.5 text-[11px] font-medium leading-4 text-[#7F00FF]">
-            {variantCount} Layouts
-          </span>
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 shrink-0 text-[#171717] transition-transform duration-200",
-              expanded && "rotate-180",
-            )}
-            strokeWidth={2}
-            aria-hidden
-          />
-        </button>
-      ) : null}
     </section>
   );
 }
@@ -1009,6 +1686,7 @@ export const BlocksPanel = ({
   onInsertBlock: (block: TemplateBlock) => void;
 }) => {
   const [blockPrompt, setBlockPrompt] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [{ blocks, error, loading }, dispatchBlockState] = useReducer(
     blocksPanelReducer,
     initialBlocksPanelState,
@@ -1031,6 +1709,15 @@ export const BlocksPanel = ({
         ),
     );
   }, [blockPrompt, blocks]);
+  const visibleLayoutCount = useMemo(
+    () =>
+      visibleBlocks.reduce(
+        (count, group) => count + group.variants.length,
+        0,
+      ),
+    [visibleBlocks],
+  );
+  const searchActive = blockPrompt.trim().length > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -1059,7 +1746,7 @@ export const BlocksPanel = ({
           from_cache: false,
         });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
         dispatchBlockState({
           type: "failed",
@@ -1067,88 +1754,118 @@ export const BlocksPanel = ({
         });
         trackEvent(MixpanelEvent.Editor_Template_Blocks_Load_Failed, {
           presentation_id: presentationId,
-          error_message: "Could not load template components.",
+          error_type:
+            error instanceof Error ? error.name : "template_blocks_load_error",
         });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, presentationData, presentationId]);
+  }, [cacheKey, loadAttempt, presentationData, presentationId]);
 
   return (
-    <div className="h-full overflow-y-auto px-[clamp(14px,1.4vw,20px)] pb-[clamp(24px,2.2vw,32px)] pt-[clamp(24px,2.2vw,32px)] hide-scrollbar">
-      <style jsx global>{`
-        .template-block-preview,
-        .template-block-preview-surface,
-        .template-block-preview-content,
-        .template-block-preview-content > div {
-          transition:
-            background 180ms ease,
-            background-color 180ms ease;
-        }
-
-        .template-block-variant:hover .template-block-preview,
-        .template-block-variant:hover .template-block-preview-surface,
-        .template-block-variant:hover .template-block-preview-content,
-        .template-block-variant:hover .template-block-preview-content > div {
-          background: #a2a2a3 !important;
-        }
-      `}</style>
-      <h3 className="mb-3 text-[clamp(13px,0.95vw,15px)] font-semibold leading-5 text-[#101323]">
-        Blocks
-      </h3>
-
-      <div className="mb-7 flex h-[clamp(46px,3.6vw,52px)] items-center rounded-[10px] border border-[#EDEEF0] bg-white pl-[clamp(10px,0.9vw,12px)] pr-[clamp(6px,0.6vw,8px)] shadow-[0_10px_26px_rgba(17,24,39,0.08)]">
-        <input
-          value={blockPrompt}
-          onChange={(event) => setBlockPrompt(event.target.value)}
-          placeholder="Search blocks"
-          className="min-w-0 flex-1 bg-transparent text-[clamp(10px,0.75vw,12px)] text-[#101323] outline-none placeholder:text-[#9CA3AF]"
-        />
-        <button
-          type="button"
-          disabled={disabled}
-          className="flex h-[clamp(32px,2.5vw,36px)] w-[clamp(32px,2.5vw,36px)] shrink-0 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-50"
-          style={{
-            background:
-              "linear-gradient(270deg, #D5CAFC 2.4%, #E3D2EB 35%, #FDE4C2 100%)",
-          }}
-          aria-label="Create block"
-        >
-          <Search
-            className="h-[clamp(12px,0.9vw,14px)] w-[clamp(12px,0.9vw,14px)] text-[#101323]"
-            strokeWidth={1.9}
+    <div className="h-full overflow-y-auto hide-scrollbar">
+      <div className="sticky top-0 z-20 border-b border-[#F4F4F5] bg-white/95 px-[clamp(14px,1.4vw,20px)] pb-4 pt-5 backdrop-blur-sm">
+        <label className="relative block">
+          <span className="sr-only">Search blocks</span>
+          <input
+            type="search"
+            value={blockPrompt}
+            onChange={(event) => setBlockPrompt(event.target.value)}
+            placeholder="Search Blocks..."
+            className="h-11 w-full appearance-none border-0 border-b border-[#E4E4E7] bg-transparent px-0 pr-8 text-[15px] font-normal text-[#191919] outline-none transition-colors placeholder:text-[#A1A1AA] focus:border-[#7A5AF8] [&::-webkit-search-cancel-button]:hidden"
           />
-        </button>
+          {blockPrompt ? (
+            <button
+              type="button"
+              onClick={() => setBlockPrompt("")}
+              className="absolute right-0 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-[#A1A1AA] transition-colors hover:bg-[#F0EEFF] hover:text-[#6938EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+              aria-label="Clear block search"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
+        </label>
+
+        <div className="mt-5 flex items-end justify-between gap-3">
+          <h3 className="text-[15px] font-semibold leading-5 text-[#101323]">
+            Blocks
+          </h3>
+          {!loading && !error ? (
+            <span className="text-[11px] tabular-nums text-[#A1A1AA]">
+              {visibleLayoutCount}{" "}
+              {visibleLayoutCount === 1 ? "Layout" : "Layouts"}
+            </span>
+          ) : null}
+        </div>
       </div>
 
-      <SectionLabel>Content</SectionLabel>
-
-      <div className="space-y-3">
+      <div className="px-[clamp(14px,1.4vw,20px)] pb-[clamp(24px,2.2vw,32px)] pt-2">
         {loading && (
-          <p className="rounded-[8px] border border-[#E5E7EB] bg-[#F9FAFB] p-4 text-[11px] leading-4 text-[#667085]">
-            Loading template components...
-          </p>
+          <div className="space-y-4 py-2" aria-label="Loading block layouts">
+            {[0, 1, 2].map((item) => (
+              <div key={item} className="animate-pulse">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="h-3 w-3 rounded bg-[#EDEEF0]" />
+                  <div className="h-3 w-28 rounded bg-[#EDEEF0]" />
+                  <div className="ml-auto h-3 w-12 rounded bg-[#F2F2F4]" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="aspect-video rounded-[8px] bg-[#F2F2F4]" />
+                  <div className="aspect-video rounded-[8px] bg-[#F2F2F4]" />
+                </div>
+              </div>
+            ))}
+          </div>
         )}
         {!loading && error && (
-          <p className="rounded-[8px] border border-[#FEE4E2] bg-[#FFFBFA] p-4 text-[11px] leading-4 text-[#B42318]">
-            {error}
-          </p>
+          <div className="mt-4 rounded-[10px] border border-[#FEE4E2] bg-[#FFFBFA] p-4 text-center">
+            <p className="text-[12px] font-medium text-[#B42318]">{error}</p>
+            <p className="mt-1 text-[11px] leading-4 text-[#667085]">
+              Check your connection and try loading the layouts again.
+            </p>
+            <button
+              type="button"
+              onClick={() => setLoadAttempt((current) => current + 1)}
+              className="mt-3 rounded-[7px] bg-[#FEF3F2] px-3 py-1.5 text-[11px] font-medium text-[#B42318] transition-colors hover:bg-[#FEE4E2] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FDA29B]/50"
+            >
+              Try again
+            </button>
+          </div>
         )}
         {!loading && !error && visibleBlocks.length === 0 && (
-          <p className="rounded-[8px] border border-dashed border-[#D0D5DD] bg-[#F9FAFB] p-4 text-[11px] leading-4 text-[#667085]">
-            No template components found.
-          </p>
+          <div className="mt-4 rounded-[10px] border border-dashed border-[#D4D4D8] bg-[#FAFAFA] px-4 py-8 text-center">
+            <Search className="mx-auto h-5 w-5 text-[#A1A1AA]" strokeWidth={1.7} aria-hidden />
+            <p className="mt-2 text-[12px] font-medium text-[#52525B]">
+              {searchActive ? "No matching blocks" : "No blocks available"}
+            </p>
+            <p className="mt-1 text-[11px] leading-4 text-[#A1A1AA]">
+              {searchActive
+                ? "Try a different title or keyword."
+                : "This template does not include reusable blocks."}
+            </p>
+            {searchActive ? (
+              <button
+                type="button"
+                onClick={() => setBlockPrompt("")}
+                className="mt-3 rounded-[7px] bg-[#F0EEFF] px-3 py-1.5 text-[11px] font-medium text-[#6938EF] transition-colors hover:bg-[#E4E0FF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7A5AF8]/40"
+              >
+                Clear search
+              </button>
+            ) : null}
+          </div>
         )}
         {!loading &&
           !error &&
           visibleBlocks.map((group) => (
             <BlockGroupCard
-              key={group.key}
+              key={`${group.key}:${searchActive ? "search" : "browse"}`}
+              defaultExpanded
               disabled={disabled}
               group={group}
               onInsertBlock={onInsertBlock}
+              searchActive={searchActive}
             />
           ))}
       </div>
@@ -1178,13 +1895,14 @@ function PrimaryActionButton({
       title={disabled ? disabledReason : undefined}
       aria-label={disabled && disabledReason ? `${label}: ${disabledReason}` : label}
       className={cn(
-        "flex h-12 w-[82px] flex-col items-center justify-center gap-1",
+        "flex h-12 w-full flex-col items-center justify-center gap-1",
         disabled && "cursor-not-allowed opacity-40",
       )}
       onClick={onClick}
+      aria-pressed={active}
     >
       <span
-        className={`flex h-[30px] w-[30px] items-center justify-center rounded-[10px] border border-transparent ${
+        className={`flex h-[30px] w-[30px] items-center justify-center rounded-[8px] border border-transparent ${
           active ? "border-[#EDEEEF] bg-white" : ""
         }`}
         style={{
@@ -1219,47 +1937,31 @@ function ActionsSidebar({
   return (
     <aside
       aria-label="Editor tools"
-      className="ml-auto flex h-full w-[90px] font-syne shrink-0 flex-col items-center gap-5 bg-white px-[10px] py-2"
+      className="ml-auto flex h-full w-[70px] shrink-0 flex-col items-center gap-5 overflow-y-auto bg-white py-3.5 hide-scrollbar"
     >
-      <div
-        className="flex w-full shrink-0 flex-col items-center gap-5 rounded-[10px] py-7"
-        style={{
-          background: "rgba(244, 243, 255, 0.60)",
-        }}
-      >
+      {aiOnly && (
         <PrimaryActionButton
           active={activeAction === "ai"}
           iconSrc={actionIconSrc.ai}
           label="AI"
           onClick={() => onActionSelect("ai")}
         />
-        {!aiOnly && (
-          <>
-            <div className="h-0 w-[30px] border-t border-[#EDEEEF]" />
-            <PrimaryActionButton
-              active={activeAction === "blocks"}
-              disabled={blocksUnavailable}
-              disabledReason="Blocks require a presentation template"
-              iconSrc={actionIconSrc.blocks}
-              label="Blocks"
-              onClick={() => onActionSelect("blocks")}
-            />
-          </>
-        )}
-      </div>
+      )}
 
       {!aiOnly && (
         <>
-          <div className="h-0 w-[30px] shrink-0 border-t border-[#EDEEEF]" />
-          <nav className="flex w-full flex-col items-center gap-5">
+          <nav className="flex w-full flex-col items-center gap-6">
             {insertActions.map((item) => (
               <React.Fragment key={item.id}>
                 <NavButton
                   item={item}
                   active={activeAction === item.id}
+                  disabled={item.id === "blocks" && blocksUnavailable}
                   onClick={() => onActionSelect(item.id)}
                 />
-                <div className="h-0 w-[30px] shrink-0 border-t border-[#EDEEEF]" />
+                {item.id === "blocks" && (
+                  <div className="h-0 w-[30px] shrink-0 border-t border-[#EDEEEF]" />
+                )}
               </React.Fragment>
             ))}
           </nav>
@@ -1308,84 +2010,77 @@ function ActionsPanel({
   presentationId: string;
   templateTheme: TemplateTheme;
 }) {
-  return (
-    <div className="min-w-0 flex-1 bg-white">
-      <div className={cn("h-full", activeAction === "ai" ? "block" : "hidden")}>
-        <Chat
-          {...chatProps}
-          presentationData={presentationData}
-          inputDisabled={editingDisabled}
-        />
-      </div>
+  const galleryPreviewTheme = useMemo(
+    () =>
+      hasExplicitThemeBackground(presentationData)
+        ? templateTheme
+        : { ...templateTheme, background: "#F6F6F9" },
+    [presentationData, templateTheme],
+  );
 
-      {!aiOnly && !blocksUnavailable && activeAction === "blocks" && (
-        <BlocksPanel
-          disabled={editingDisabled}
-          presentationId={presentationId}
-          presentationData={presentationData}
-          onInsertBlock={onBlockSelect}
-        />
-      )}
-      {!aiOnly && activeAction === "texts" && (
-        <InsertPanel
-          disabled={editingDisabled}
-          title="Texts"
-          groups={[{ label: "Add", items: textItems }]}
-          onItemSelect={onTextItemSelect}
-          previewKind="text"
-          theme={templateTheme}
-        />
-      )}
-      {!aiOnly && activeAction === "charts" && (
-        <InsertPanel
-          disabled={editingDisabled}
-          title="Charts"
-          groups={[{ label: "Chart Type", items: chartTypeItems }]}
-          onItemSelect={onChartItemSelect}
-          previewKind="chart"
-          theme={templateTheme}
-        />
-      )}
-      {!aiOnly && activeAction === "infographics" && (
-        <InsertPanel
-          disabled={editingDisabled}
-          title="Infographics"
-          groups={[{ label: "Choose a layout", items: infographicItems }]}
-          onItemSelect={onInfographicItemSelect}
-          previewKind="infographic"
-          theme={templateTheme}
-        />
-      )}
-      {!aiOnly && activeAction === "tables" && (
-        <InsertPanel
-          disabled={editingDisabled}
-          title="Tables"
-          groups={[{ label: "Table Type", items: tableTypeItems }]}
-          onItemSelect={onTableItemSelect}
-          previewKind="table"
-          theme={templateTheme}
-        />
-      )}
-      {!aiOnly && activeAction === "images" && (
-        <InsertPanel
-          disabled={editingDisabled}
-          title="Images"
-          groups={[{ label: "Add", items: imageItems }]}
-          onItemSelect={onImageItemSelect}
-          previewKind="image"
-          theme={templateTheme}
-        />
-      )}
-      {!aiOnly && activeAction === "elements" && (
-        <InsertPanel
-          disabled={editingDisabled}
-          title="Elements"
-          groups={elementItemGroups}
-          onItemSelect={onElementItemSelect}
-          previewKind="element"
-          theme={templateTheme}
-        />
-      )}
+  return (
+    <div className="flex h-full min-w-0 flex-1 flex-col bg-white">
+      <div className="min-h-0 flex-1">
+        <div className={cn("h-full", activeAction === "ai" ? "block" : "hidden")}>
+          <Chat {...chatProps} presentationData={presentationData} inputDisabled={editingDisabled} />
+        </div>
+
+        {!blocksUnavailable &&
+          !aiOnly &&
+          activeAction === "blocks" && (
+          <BlocksPanel
+            disabled={editingDisabled}
+            presentationId={presentationId}
+            presentationData={presentationData}
+            onInsertBlock={onBlockSelect}
+          />
+        )}
+        {!aiOnly && activeAction === "texts" && (
+          <TextsPanel
+            disabled={editingDisabled}
+            onItemSelect={onTextItemSelect}
+            theme={galleryPreviewTheme}
+          />
+        )}
+        {!aiOnly && activeAction === "charts" && (
+          <ChartsPanel
+            disabled={editingDisabled}
+            onItemSelect={onChartItemSelect}
+            theme={galleryPreviewTheme}
+          />
+        )}
+        {!aiOnly && activeAction === "infograph" && (
+          <InfographicsPanel
+            disabled={editingDisabled}
+            onItemSelect={onInfographicItemSelect}
+            theme={galleryPreviewTheme}
+          />
+        )}
+        {!aiOnly && activeAction === "tables" && (
+          <InsertPanel
+            disabled={editingDisabled}
+            title="Tables"
+            groups={[{ label: "Table Type", items: tableTypeItems }]}
+            onItemSelect={onTableItemSelect}
+            previewKind="table"
+            theme={templateTheme}
+          />
+        )}
+        {!aiOnly && activeAction === "images" && (
+          <ImagesPanel
+            disabled={editingDisabled}
+            onItemSelect={onImageItemSelect}
+            theme={templateTheme}
+          />
+        )}
+        {!aiOnly && activeAction === "shapes" && (
+          <ShapesPanel
+            disabled={editingDisabled}
+            onItemSelect={onElementItemSelect}
+            theme={templateTheme}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -1430,6 +2125,35 @@ const PresentationActions = (props: PresentationActionsProps) => {
     presentationActionsUiReducer,
     initialPresentationActionsUiState,
   );
+  const nextBlankPromptId = useRef(0);
+  const [blankSlidePromptRequest, setBlankSlidePromptRequest] =
+    useState<BlankSlidePromptRequest | null>(null);
+
+  useEffect(() => {
+    if (props.variant !== "template-v2" || aiOnly) return;
+
+    const handleBlankSlidePrompt = (event: Event) => {
+      const detail = (event as CustomEvent<BlankSlidePromptEventDetail>).detail;
+      if (typeof detail?.prompt !== "string" || !detail.prompt.trim()) return;
+
+      nextBlankPromptId.current += 1;
+      setBlankSlidePromptRequest({ id: nextBlankPromptId.current, detail });
+      dispatchUiState({ type: "selectAction", activeAction: "ai" });
+      onPanelOpenChange(true);
+    };
+
+    window.addEventListener(PRESENTON_BLANK_SLIDE_PROMPT_EVENT, handleBlankSlidePrompt);
+    return () =>
+      window.removeEventListener(PRESENTON_BLANK_SLIDE_PROMPT_EVENT, handleBlankSlidePrompt);
+  }, [aiOnly, onPanelOpenChange, props.variant]);
+
+  useEffect(() => {
+    setBlankSlidePromptRequest(null);
+  }, [props.presentationId]);
+
+  const handleBlankSlidePromptConsumed = useCallback((id: number) => {
+    setBlankSlidePromptRequest((current) => current?.id === id ? null : current);
+  }, []);
   const [templateV2SelectionContext, setTemplateV2SelectionContext] = useState<{
     slideIndex: number | null;
     target: TemplateV2SurfaceSelectedDetail["selection"];
@@ -1723,6 +2447,8 @@ const PresentationActions = (props: PresentationActionsProps) => {
           blocksUnavailable={blocksUnavailable}
           chatProps={{
             ...chatProps,
+            blankSlidePromptRequest,
+            onBlankSlidePromptConsumed: handleBlankSlidePromptConsumed,
             currentSlide: chatSlide,
             selectedTemplateV2Target,
             onClearChatSlideReference:

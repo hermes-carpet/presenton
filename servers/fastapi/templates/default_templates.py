@@ -13,6 +13,7 @@ from services.database import async_session_maker
 from templates.v2.models.layouts import MergedComponents, SlideLayouts
 from utils.get_env import get_app_data_directory_env
 from utils.icon_weights import extract_icon_type_from_settings
+from utils.safe_logging import safe_log
 
 
 LOGGER = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ def resolve_default_template_id(
     try:
         raw = json.loads(template_json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        LOGGER.warning(
+        safe_log(LOGGER, logging.WARNING,
             "Unable to read bundled template metadata for %s: %s",
             template_name,
             exc,
@@ -100,7 +101,7 @@ def resolve_default_template_id(
         return template_name
     template_id = template_id.strip()
     if "/" in template_id or "\\" in template_id:
-        LOGGER.warning(
+        safe_log(LOGGER, logging.WARNING,
             "Ignoring invalid bundled template ID for %s: %s",
             template_name,
             template_id,

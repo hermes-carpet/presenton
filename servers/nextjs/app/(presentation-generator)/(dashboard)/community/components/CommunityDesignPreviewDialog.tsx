@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import SmartHtmlSlide from "@/app/(presentation-generator)/components/SmartHtmlSlide";
+import SlidePreviewLoader from "@/app/(presentation-generator)/components/SlidePreviewLoader";
 import {
   CommunityPresentationApi,
   getCommunityPresentationAuthor,
@@ -216,6 +217,7 @@ export default function CommunityDesignPreviewDialog({
 
               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(230px,270px)] sm:overflow-hidden">
                 <div
+                  aria-busy={loading || isLoadingReference}
                   className="min-h-[300px] bg-[#FBFCFD] bg-center bg-repeat p-3 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain sm:p-4 sm:pr-5"
                   style={{
                     backgroundImage:
@@ -223,7 +225,11 @@ export default function CommunityDesignPreviewDialog({
                     backgroundSize: "23px 23px",
                   }}
                 >
-                  {slides.length > 0 ? (
+                  {loading || isLoadingReference ? (
+                    <div className="relative min-h-[260px] h-full overflow-hidden rounded-xl border border-[#EDEEEF] bg-white">
+                      <SlidePreviewLoader label="Loading presentation slides…" />
+                    </div>
+                  ) : slides.length > 0 ? (
                     <div className="flex flex-col gap-3.5">
                       {slides.map((slide, index) => (
                         <div
@@ -231,6 +237,7 @@ export default function CommunityDesignPreviewDialog({
                           className="aspect-[1840/1038] w-full overflow-hidden bg-white"
                         >
                           <SmartHtmlSlide
+                            showLoader
                             executeScripts={false}
                             html={slide}
                             fonts={displayedPresentation?.fonts}
@@ -241,7 +248,7 @@ export default function CommunityDesignPreviewDialog({
                     </div>
                   ) : (
                     <div className="flex h-full min-h-[260px] items-center justify-center rounded-xl border border-dashed border-[#D9D9DE] bg-white text-sm text-[#808080]">
-                      {loading ? "Loading slide previews ..." : "No slide previews available"}
+                      No slide previews available
                     </div>
                   )}
                 </div>

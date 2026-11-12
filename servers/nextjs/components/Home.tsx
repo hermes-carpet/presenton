@@ -14,15 +14,15 @@ export default function Home() {
   const [providerStep, setProviderStep] = useState<number>(1)
   const config = useSelector((state: RootState) => state.userConfig);
 
-  const canChangeKeys = config.can_change_keys;
+  const isAdmin = config.role === "admin";
 
   useEffect(() => {
-    if (!canChangeKeys) {
+    if (!isAdmin) {
       router.push("/upload");
     }
-  }, [canChangeKeys, router]);
+  }, [isAdmin, router]);
 
-  if (!canChangeKeys) {
+  if (!isAdmin) {
     return null;
   }
 
