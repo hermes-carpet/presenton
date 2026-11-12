@@ -67,6 +67,7 @@ Use this file as the checklist when resolving merge conflicts with upstream.
 3. **Disable upstream's release workflows** in the Actions tab: `docker-release.yml` (releases, manual dispatch; targets upstream's registry), `sync-releaes-to-r2.yml` (releases) and `electron-linux-ubuntu22.yml` (its branch, manual dispatch). GitHub lists a fork's workflow only after a trigger has fired, so disable each one once it appears. Disabling is a repo setting and survives merges.
 4. **Reviewing upstream `.github/` changes:** when the `upstream-sync` issue says workflow changes need review, check them on the compare link. Then run **Upstream sync** manually with `reviewed_upstream_sha` set to the listed upstream commit's **full 40-character SHA**; prefixes are refused. After merging the sync PR, disable any new workflow that doesn't apply.
 5. **Image visibility:** after the first image push, make the `presenton` package public, or log in to `ghcr.io` on the server.
+6. **Merge method:** under Settings → General → Pull Requests, allow only merge commits (squash and rebase off). A squashed or rebased sync PR drops upstream's commits from `main`'s history. The next sync then re-merges everything since the fork point, with misleading reports, extra conflicts and repeated `.github/` reviews.
 
 ## `Dockerfile.fork`
 
